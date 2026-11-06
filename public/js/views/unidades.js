@@ -2,6 +2,7 @@
 import { S, capi, html, raw, mount, $, pesos, fecha, fechaHora, hoy, puede, tabla, m, pill, ESTADO_PAGO, METODOS, toast, dialogo, val, pesosDe, centsToInput, cargando, addMonths, periodoActual, imprimir } from '../ui.js';
 import { dialogoPago, imprimirRecibo, imprimirConstancia, invalidar, docEstadoCuenta, pedirMotivo } from './comun.js';
 import { estadoUnidad } from './tablero.js';
+import { abrirImportacion, descargarPlantilla } from './importar.js';
 
 const TIPOS = ['departamento', 'casa', 'local', 'oficina', 'bodega', 'estacionamiento'];
 const EST = { ocupada: 'Ocupada', vacante: 'Vacante', renta: 'En renta' };
@@ -18,7 +19,7 @@ export async function render(el, ctx) {
   const totInd = us.filter(u => u.activo).reduce((a, u) => a + u.indiviso_ppm, 0);
   mount(el, html`
     <div class="title-row"><div><h1>Unidades y residentes</h1><p class="sub">${us.filter(u => u.activo).length} unidades activas · indivisos suman ${(totInd / 10000).toFixed(4)}% ${totInd === 1000000 ? '' : html`<b class="neg-t">(deben sumar 100%)</b>`} · cuota mensual total ${pesos(us.filter(u => u.activo).reduce((a, u) => a + u.cuota_cents, 0))}</p></div>
-      <div class="actions">${puede('config') ? html`<button class="btn" data-action="nueva">Nueva unidad</button>` : ''}${puede('capturar') ? html`<button class="btn" data-action="persona">Agregar residente</button>` : ''}</div></div>
+      <div class="actions"><button class="btn ghost" data-action="exportar">Exportar a Excel</button>${puede('config') ? html`<button class="btn" data-action="importar">Importar directorio</button><button class="btn" data-action="saldos">Saldos iniciales</button><button class="btn" data-action="nueva">Nueva unidad</button>` : ''}${puede('capturar') ? html`<button class="btn" data-action="persona">Agregar residente</button>` : ''}</div></div>
     <form class="filters" data-buscar><label class="search"><span class="sr">Buscar</span><input name="q" value="${qtxt}" placeholder="Unidad, propietario, referencia o correo"></label><button class="btn">Buscar</button></form>
     <section class="panel flush"><header><h2>${rows.length} unidades</h2></header>
     ${tabla([
@@ -32,7 +33,10 @@ export async function render(el, ctx) {
       { t: 'Estado', k: u => pill(ESTADO_TXT[estadoUnidad(u)]) },
     ], rows, { fila: u => `data-href="#/c/${S.cid}/unidades/${u.id}" tabindex="0"`, vacio: 'Sin unidades que coincidan.' })}</section>`);
   $('[data-buscar]', el).addEventListener('submit', e => { e.preventDefault(); location.hash = `${ctx.base}/?q=${encodeURIComponent(e.target.q.value)}`; });
-  ctx.acciones({ nueva: () => editarUnidad(null, ctx), persona: () => nuevaPersona(us, null, ctx) });
+  ctx.acciones({ nueva: () => editarUnidad(null, ctx), persona: () => nuevaPersona(us, null, ctx),
+    exportar: () => descargarPlantilla('directorio'),
+    importar: () => abrirImportacion('directorio', { onOk: () => { invalidar(); ctx.recargar(); } }),
+    saldos: () => abrirImportacion('saldos', { onOk: () => { invalidar(); ctx.recargar(); } }) });
 }
 
 function editarUnidad(u, ctx) {

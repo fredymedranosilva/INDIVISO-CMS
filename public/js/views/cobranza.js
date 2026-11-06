@@ -2,6 +2,7 @@
 import { S, capi, html, raw, mount, $, pesos, fecha, mesNombre, periodoActual, addMonths, hoy, puede, tabla, m, pill, ESTADO_PAGO, METODOS, toast, dialogo, confirmar, val, pesosDe, descargar, cargando, barra, tabs, pct } from '../ui.js';
 import { dialogoPago, imprimirRecibo, bancos, unidades, invalidar, opcionesUnidad, pedirMotivo } from './comun.js';
 import { refrescarContadores } from '../app.js';
+import { abrirImportacion } from './importar.js';
 
 export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'pagos').split('?');
@@ -9,12 +10,12 @@ export async function render(el, ctx) {
   cargando(el);
   const t = await capi('/tablero');
   const head = html`<div class="title-row"><div><h1>Cobranza</h1><p class="sub">Recibos, comprobantes reportados por residentes, emisión mensual y convenios de pago.</p></div>
-    <div class="actions">${puede('capturar') ? html`<button class="btn primary" data-action="pago">Registrar pago</button>` : ''}</div></div>
+    <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarPagos">Importar desde Excel</button><button class="btn primary" data-action="pago">Registrar pago</button>` : ''}</div></div>
     ${tabs([['pagos', 'Pagos'], ['validar', 'Por validar', t.pendientes.pagos_por_validar], ['emision', 'Emisión y recargos'], ['convenios', 'Convenios']], sub, ctx.base)}`;
   const cuerpo = html`<div id="cob-body"></div>`;
   mount(el, html`${head}${cuerpo}`);
   const body = $('#cob-body', el);
-  ctx.acciones({ pago: () => dialogoPago({ onOk: () => ctx.recargar() }) });
+  ctx.acciones({ pago: () => dialogoPago({ onOk: () => ctx.recargar() }), importarPagos: () => abrirImportacion('pagos', { onOk: () => ctx.recargar() }) });
   await ({ pagos, validar, emision, convenios }[sub] || pagos)(body, ctx, q);
 }
 

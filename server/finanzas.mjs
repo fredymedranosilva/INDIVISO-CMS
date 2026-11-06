@@ -184,7 +184,7 @@ function insertarCargos(db, cid, cargos, { concepto, fecha, origen }, user) {
   const cxc = cuenta(db, cid, 'CXC'), res = cuenta(db, cid, 'FONDO_RESERVA');
   const porCuenta = new Map(); let reserva = 0;
   const lineas = nuevos.map(c => {
-    const ci = cuenta(db, cid, CUENTA_CARGO[c.tipo]);
+    const ci = cuenta(db, cid, c.cuentaClave || CUENTA_CARGO[c.tipo]);
     c.cuenta = ci;
     porCuenta.set(ci, (porCuenta.get(ci) || 0) + c.monto - c.reserva);
     reserva += c.reserva;
@@ -292,7 +292,11 @@ export function cancelarCargo(db, cid, cargoId, motivo, user) {
 }
 
 // ---------- Pagos ----------
+// Saldo a favor inicial (migración): pago sin movimiento de efectivo, contra el patrimonio.
+export const esSaldoInicial = p => typeof p?.idem_key === 'string' && p.idem_key.startsWith('INI-');
+
 function cuentaDeCobro(db, cid, pago) {
+  if (esSaldoInicial(pago)) return cuenta(db, cid, 'REMANENTE');
   if (pago.cuenta_banco_id) {
     const b = db.prepare('SELECT cuenta_id FROM cuentas_banco WHERE id = ? AND condominio_id = ? AND activo = 1').get(pago.cuenta_banco_id, cid);
     if (!b) fail(400, 'Cuenta bancaria inválida.');
@@ -365,12 +369,13 @@ export function cancelarPago(db, cid, pagoId, motivo, user) {
   const aplicado = db.prepare("SELECT COALESCE(SUM(monto_cents), 0) s FROM aplicaciones WHERE pago_id = ? AND revertida = 0").get(p.id).s;
   const libre = p.monto_cents - aplicado;
   const u = unidadDe(db, cid, p.unidad_id);
+  const doc = p.folio ? `recibo R-${p.folio}` : 'saldo a favor inicial';
   const pid = crearPoliza(db, cid, {
-    tipo: 'D', fecha: fechaContable(db, cid, hoy()), concepto: `Cancelación recibo R-${p.folio} · ${u.clave} · ${motivo}`, origen: 'cancelacion_pago', origen_id: p.id, reversa_de: p.poliza_id,
+    tipo: 'D', fecha: fechaContable(db, cid, hoy()), concepto: `Cancelación ${doc} · ${u.clave} · ${motivo}`, origen: 'cancelacion_pago', origen_id: p.id, reversa_de: p.poliza_id,
     lineas: [
-      { cuenta: cuenta(db, cid, 'CXC'), unidad: u.id, debe: aplicado, concepto: `Cancelación recibo R-${p.folio}` },
-      { cuenta: cuenta(db, cid, 'ANTICIPOS'), unidad: u.id, debe: libre, concepto: `Cancelación recibo R-${p.folio}` },
-      { cuenta: cuentaDeCobro(db, cid, p), haber: p.monto_cents, concepto: `Cancelación recibo R-${p.folio}` },
+      { cuenta: cuenta(db, cid, 'CXC'), unidad: u.id, debe: aplicado, concepto: `Cancelación ${doc}` },
+      { cuenta: cuenta(db, cid, 'ANTICIPOS'), unidad: u.id, debe: libre, concepto: `Cancelación ${doc}` },
+      { cuenta: cuentaDeCobro(db, cid, p), haber: p.monto_cents, concepto: `Cancelación ${doc}` },
     ],
   }, user);
   db.prepare('UPDATE aplicaciones SET revertida = 1 WHERE pago_id = ? AND revertida = 0').run(p.id);
@@ -378,6 +383,38 @@ export function cancelarPago(db, cid, pagoId, motivo, user) {
   if (p.poliza_id) db.prepare('UPDATE polizas SET reversada_por = ? WHERE id = ? AND reversada_por IS NULL').run(pid, p.poliza_id);
   db.prepare("UPDATE banco_movs SET conciliado_tipo = NULL, conciliado_id = NULL, conciliado_por = NULL, conciliado_at = NULL WHERE conciliado_tipo = 'pago' AND conciliado_id = ?").run(p.id);
   return { poliza_id: pid };
+}
+
+// ---------- Saldos iniciales (migración desde otro sistema) ----------
+// Adeudo: cargo contra «Remanente de ejercicios anteriores» (no es ingreso del ejercicio).
+// Saldo a favor: crédito de la unidad contra el mismo remanente; se aplica a cargos futuros.
+// Uno por unidad: reimportar el archivo no duplica.
+export function saldoInicial(db, cid, d, user) {
+  const u = unidadDe(db, cid, d.unidad_id);
+  if (!d.monto_cents) fail(400, 'El saldo es cero; no hay nada que registrar.');
+  const concepto = d.concepto || `Saldo inicial al ${d.fecha}`;
+  if (d.monto_cents > 0) {
+    if (db.prepare('SELECT 1 FROM cargos WHERE dedupe_key = ?').get(`INI:${u.id}`)) return { omitido: true, motivo: 'La unidad ya tiene adeudo inicial registrado.' };
+    const r = insertarCargos(db, cid, [{ unidad: u.id, tipo: 'otro', cuentaClave: 'REMANENTE', concepto, periodo: periodoDe(d.fecha), vencimiento: d.fecha, monto: d.monto_cents, reserva: 0, dedupe: `INI:${u.id}` }],
+      { concepto: `Saldo inicial · ${u.clave}`, fecha: d.fecha, origen: 'saldo_inicial' }, user);
+    return { tipo: 'adeudo', monto: d.monto_cents, poliza_id: r.poliza_id };
+  }
+  const key = `INI-${cid}-${u.id}`;
+  if (db.prepare('SELECT 1 FROM pagos WHERE idem_key = ?').get(key)) return { omitido: true, motivo: 'La unidad ya tiene saldo a favor inicial registrado.' };
+  const monto = -d.monto_cents;
+  const r = db.prepare(`INSERT INTO pagos (condominio_id, unidad_id, fecha, monto_cents, metodo, estado, idem_key, notas, created_by, created_at)
+    VALUES (?,?,?,?,'deposito','por_validar',?,?,?,?)`).run(cid, u.id, d.fecha, monto, key, concepto.slice(0, 300), user?.id ?? null, Date.now());
+  const pagoId = Number(r.lastInsertRowid);
+  const pid = crearPoliza(db, cid, {
+    tipo: 'D', fecha: d.fecha, concepto: `Saldo a favor inicial · ${u.clave}`, origen: 'saldo_inicial', origen_id: pagoId,
+    lineas: [
+      { cuenta: cuenta(db, cid, 'REMANENTE'), debe: monto, concepto },
+      { cuenta: cuenta(db, cid, 'ANTICIPOS'), unidad: u.id, haber: monto, concepto },
+    ],
+  }, user);
+  db.prepare("UPDATE pagos SET estado = 'aplicado', poliza_id = ?, validado_por = ?, validado_at = ? WHERE id = ?").run(pid, user?.id ?? null, Date.now(), pagoId);
+  aplicarSaldoFavor(db, cid, u.id, d.fecha, user);
+  return { tipo: 'favor', monto, poliza_id: pid };
 }
 
 // ---------- Egresos (con segregación de funciones) ----------

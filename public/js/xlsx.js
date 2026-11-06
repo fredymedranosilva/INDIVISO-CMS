@@ -1,0 +1,160 @@
+// Excel sin dependencias: lee .xlsx / .csv / texto pegado y escribe .xlsx (plantillas y exportaciones).
+// Un .xlsx es un ZIP de XML: se descomprime con DecompressionStream (nativo del navegador).
+
+// ---------- Lectura ----------
+export async function leerTabla(file) {
+  const nombre = file.name.toLowerCase();
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (buf[0] === 0x50 && buf[1] === 0x4b) return leerXlsx(buf);
+  if (buf[0] === 0xd0 && buf[1] === 0xcf) throw new Error('Formato .xls antiguo: en Excel use «Guardar como» → Libro de Excel (.xlsx) o CSV.');
+  if (/\.(xlsx|xlsm)$/.test(nombre)) throw new Error('El archivo .xlsx está dañado o no es un libro de Excel.');
+  return leerTexto(decodificar(buf));
+}
+
+// CSV de Excel en Windows suele venir en ANSI (Windows-1252), no en UTF-8.
+function decodificar(buf) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch { return new TextDecoder('windows-1252').decode(buf); }
+}
+
+// CSV, TSV o celdas copiadas de Excel. Respeta comillas y saltos de línea dentro de comillas.
+export function leerTexto(texto) {
+  const t = texto.replace(/^﻿/, '');
+  const primera = t.split(/\r?\n/, 1)[0];
+  const cuenta = ch => (primera.match(new RegExp(ch === '\t' ? '\\t' : ch, 'g')) || []).length;
+  const sep = ['\t', ';', ','].sort((a, b) => cuenta(b) - cuenta(a))[0];
+  const filas = []; let fila = [], cel = '', q = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) {
+      if (c === '"') { if (t[i + 1] === '"') { cel += '"'; i++; } else q = false; }
+      else cel += c;
+    } else if (c === '"' && cel === '') q = true;
+    else if (c === sep) { fila.push(cel); cel = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && t[i + 1] === '\n') i++; fila.push(cel); filas.push(fila); fila = []; cel = ''; }
+    else cel += c;
+  }
+  if (cel !== '' || fila.length) { fila.push(cel); filas.push(fila); }
+  return filas.map(f => f.map(s => s.trim()));
+}
+
+async function unzip(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('El archivo no es un libro de Excel válido.');
+  const n = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const dec = new TextDecoder();
+  const archivos = new Map();
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const metodo = dv.getUint16(p + 10, true), comp = dv.getUint32(p + 20, true);
+    const ln = dv.getUint16(p + 28, true), le = dv.getUint16(p + 30, true), lc = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const nombre = dec.decode(buf.subarray(p + 46, p + 46 + ln));
+    archivos.set(nombre, { metodo, comp, off });
+    p += 46 + ln + le + lc;
+  }
+  return async nombre => {
+    const e = archivos.get(nombre.replace(/^\//, ''));
+    if (!e) return null;
+    const ini = e.off + 30 + dv.getUint16(e.off + 26, true) + dv.getUint16(e.off + 28, true);
+    const datos = buf.subarray(ini, ini + e.comp);
+    if (e.metodo === 0) return dec.decode(datos);
+    if (e.metodo !== 8) throw new Error('Compresión no soportada en el archivo.');
+    if (typeof DecompressionStream === 'undefined') throw new Error('Su navegador no puede leer .xlsx; actualícelo o guarde el archivo como CSV.');
+    const s = new Blob([datos]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return dec.decode(await new Response(s).arrayBuffer());
+  };
+}
+
+const xml = s => new DOMParser().parseFromString(s, 'application/xml');
+const tags = (n, t) => [...n.getElementsByTagNameNS('*', t)];
+const colDe = ref => { let c = 0; for (const ch of ref.replace(/\d+$/, '')) c = c * 26 + ch.charCodeAt(0) - 64; return c - 1; };
+
+async function leerXlsx(buf) {
+  const leer = await unzip(buf);
+  const wb = await leer('xl/workbook.xml');
+  if (!wb) throw new Error('El archivo no es un libro de Excel válido.');
+  const hoja = tags(xml(wb), 'sheet')[0];
+  const rid = hoja?.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || hoja?.getAttribute('r:id');
+  const rels = xml(await leer('xl/_rels/workbook.xml.rels') || '<x/>');
+  let destino = tags(rels, 'Relationship').find(r => r.getAttribute('Id') === rid)?.getAttribute('Target') || 'worksheets/sheet1.xml';
+  destino = destino.startsWith('/') ? destino.slice(1) : 'xl/' + destino.replace(/^\.\//, '');
+  const sst = await leer('xl/sharedStrings.xml');
+  const textos = sst ? tags(xml(sst), 'si').map(si => tags(si, 't').filter(t => t.parentNode.localName !== 'rPh').map(t => t.textContent).join('')) : [];
+  const sh = await leer(destino);
+  if (!sh) throw new Error('No se encontró la primera hoja del libro.');
+  const filas = [];
+  for (const row of tags(xml(sh), 'row')) {
+    const r = (+row.getAttribute('r') || filas.length + 1) - 1;
+    const f = filas[r] = [];
+    let col = 0;
+    for (const c of tags(row, 'c')) {
+      const ref = c.getAttribute('r'); if (ref) col = colDe(ref);
+      const t = c.getAttribute('t'), vv = tags(c, 'v')[0]?.textContent ?? '';
+      let val;
+      if (t === 's') val = textos[+vv] ?? '';
+      else if (t === 'inlineStr') val = tags(c, 't').map(x => x.textContent).join('');
+      else if (t === 'b') val = vv === '1' ? 'Sí' : 'No';
+      else if (t === 'str' || t === 'e') val = vv;
+      else val = vv === '' ? '' : Number(vv);
+      f[col++] = val;
+    }
+  }
+  return Array.from(filas, f => Array.from(f || [], x => x ?? ''));
+}
+
+// ---------- Escritura (.xlsx mínimo: varias hojas, encabezado en negritas y fijo) ----------
+const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+const crc32 = b => { let c = 0xffffffff; for (const x of b) c = CRC[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+function zip(archivos) {
+  const enc = new TextEncoder(), partes = [], central = []; let off = 0;
+  for (const [nombre, contenido] of archivos) {
+    const n = enc.encode(nombre), d = enc.encode(contenido), crc = crc32(d);
+    const h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true); h.setUint16(12, 0x21, true);
+    h.setUint32(14, crc, true); h.setUint32(18, d.length, true); h.setUint32(22, d.length, true); h.setUint16(26, n.length, true);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(14, 0x21, true);
+    c.setUint32(16, crc, true); c.setUint32(20, d.length, true); c.setUint32(24, d.length, true); c.setUint16(28, n.length, true); c.setUint32(42, off, true);
+    partes.push(new Uint8Array(h.buffer), n, d); central.push(new Uint8Array(c.buffer), n);
+    off += 30 + n.length + d.length;
+  }
+  const tam = central.reduce((a, x) => a + x.length, 0);
+  const e = new DataView(new ArrayBuffer(22));
+  e.setUint32(0, 0x06054b50, true); e.setUint16(8, archivos.length, true); e.setUint16(10, archivos.length, true); e.setUint32(12, tam, true); e.setUint32(16, off, true);
+  return new Blob([...partes, ...central, new Uint8Array(e.buffer)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+const X = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const letra = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+
+// hojas: [{ nombre, filas: [[...]], anchos?: [n] }] — la primera fila de cada hoja es el encabezado.
+export function escribirXlsx(hojas) {
+  const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  const hojaXml = h => {
+    const anchos = h.anchos || (h.filas[0] || []).map((_, j) => Math.min(48, Math.max(10, ...h.filas.slice(0, 200).map(f => String(f[j] ?? '').length + 2))));
+    const filas = h.filas.map((f, i) => `<row r="${i + 1}">${f.map((v, j) => {
+      if (v == null || v === '') return '';
+      const r = `${letra(j)}${i + 1}`, s = i === 0 ? ' s="1"' : '';
+      return typeof v === 'number' && Number.isFinite(v) ? `<c r="${r}"${s}><v>${v}</v></c>` : `<c r="${r}" t="inlineStr"${s}><is><t xml:space="preserve">${X(v)}</t></is></c>`;
+    }).join('')}</row>`).join('');
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+      + `<cols>${anchos.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${filas}</sheetData></worksheet>`;
+  };
+  const archivos = [
+    ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${hojas.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`],
+    ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+    ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${hojas.map((h, i) => `<sheet name="${X(h.nombre.slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`],
+    ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${hojas.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${hojas.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+    ['xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS}"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`],
+    ...hojas.map((h, i) => [`xl/worksheets/sheet${i + 1}.xml`, hojaXml(h)]),
+  ];
+  return zip(archivos);
+}
+
+export function guardarBlob(blob, nombre) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}

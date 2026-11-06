@@ -9,6 +9,7 @@ import * as F from './finanzas.mjs';
 import * as R from './reportes.mjs';
 import { membresias } from './auth.mjs';
 import { crearRespaldo, verificarRespaldo, rutaRespaldo } from './backup.mjs';
+import { importar, catalogosPlantilla } from './importar.mjs';
 
 const FILES_DIR = join(DATA_DIR, 'archivos');
 mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 });
@@ -496,7 +497,7 @@ export const apiRoutes = [
   ['GET', `${C}/banco-movs/:id/candidatos`, { perm: 'ver' }, ctx => {
     const m = ctx.db.prepare('SELECT bm.* FROM banco_movs bm JOIN cuentas_banco b ON b.id = bm.cuenta_banco_id WHERE bm.id = ? AND b.condominio_id = ?').get(idParam(ctx), ctx.cid) || fail(404, 'Movimiento no encontrado');
     if (m.abono_cents) return ctx.db.prepare(`SELECT p.id, 'pago' AS tipo, p.fecha, p.monto_cents AS monto, 'R-' || p.folio || ' · ' || u.clave || COALESCE(' · ' || p.referencia, '') AS descripcion FROM pagos p JOIN unidades u ON u.id = p.unidad_id
-      WHERE p.condominio_id = ? AND p.estado = 'aplicado' AND p.monto_cents = ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'pago' AND x.conciliado_id = p.id) ORDER BY ABS(julianday(p.fecha) - julianday(?)) LIMIT 10`).all(ctx.cid, m.abono_cents, m.fecha);
+      WHERE p.condominio_id = ? AND p.estado = 'aplicado' AND p.idem_key NOT LIKE 'INI-%' AND p.monto_cents = ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'pago' AND x.conciliado_id = p.id) ORDER BY ABS(julianday(p.fecha) - julianday(?)) LIMIT 10`).all(ctx.cid, m.abono_cents, m.fecha);
     return ctx.db.prepare(`SELECT e.id, 'egreso' AS tipo, e.fecha_pago AS fecha, e.total_cents AS monto, 'E-' || e.folio || ' · ' || e.concepto AS descripcion FROM egresos e
       WHERE e.condominio_id = ? AND e.estado = 'pagado' AND e.total_cents = ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'egreso' AND x.conciliado_id = e.id) ORDER BY ABS(julianday(e.fecha_pago) - julianday(?)) LIMIT 10`).all(ctx.cid, m.cargo_cents, m.fecha);
   }],
@@ -546,6 +547,13 @@ export const apiRoutes = [
       for (const u of s.unidades) up.run(u.sugerida_cents, u.id, ctx.cid);
       return { id: p.id, unidades: s.unidades.length };
     });
+  }],
+
+  // ===== Importación desde Excel / CSV =====
+  ['GET', `${C}/importar/catalogos`, { perm: 'ver' }, ctx => catalogosPlantilla(ctx.db, ctx.cid)],
+  ['POST', `${C}/importar/:tipo`, { limite: 8_000_000 }, ctx => {
+    if (!limiteUsuario(ctx, 'importar', 300)) fail(429, 'Demasiadas importaciones en poco tiempo; espere unos minutos.');
+    return importar(ctx, ctx.params.tipo, ctx.body, { perms: PERMS, rolPuede: p => PERMS[p].includes(ctx.rol), referenciaPago });
   }],
 
   // ===== Contabilidad =====
@@ -693,7 +701,7 @@ export const apiRoutes = [
   }],
 ];
 
-function limiteUsuario(ctx, k) { return rl(`${k}:${ctx.user.id}`, 10, 60 * 60 * 1000); }
+function limiteUsuario(ctx, k, n = 10) { return rl(`${k}:${ctx.user.id}`, n, 60 * 60 * 1000); }
 
 // Referencia de pago: clave de unidad + condominio + dígito verificador (módulo 97).
 function referenciaPago(db, cid, clave) {

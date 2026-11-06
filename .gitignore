@@ -1,0 +1,10 @@
+# Datos reales y secretos: nunca se suben
+data/
+*.db
+*.db-wal
+*.db-shm
+*.idvb
+respaldo.key
+.taste-skill/
+.DS_Store
+node_modules/

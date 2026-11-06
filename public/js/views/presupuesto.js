@@ -1,6 +1,7 @@
 // Presupuesto anual versionado: captura por partida y mes, aprobación en asamblea, ejercido y cuota sugerida.
 import { capi, html, raw, mount, $, $$, pesos, puede, tabla, m, pill, toast, dialogo, val, cargando, barra, pct, centsToInput, parsePesos, hoy, confirmar, fechaHora } from '../ui.js';
 import { invalidar } from './comun.js';
+import { abrirImportacion, descargarPlantilla } from './importar.js';
 
 const MES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 const EST = { borrador: ['Borrador', 'warn'], aprobado: ['Aprobado', 'pos'], sustituido: ['Sustituido', 'neutral'] };
@@ -29,7 +30,8 @@ export async function render(el, ctx) {
         <label class="switcher-inline"><span class="sr">Versión</span><select data-change="version">${lista.map(x => html`<option value="${x.id}" ${x.id === p.id ? raw('selected') : ''}>${x.ejercicio} · v${x.version} · ${EST[x.estado][0]}</option>`)}</select></label>
         ${puede('capturar') && !lista.some(x => x.ejercicio === p.ejercicio && x.estado === 'borrador') ? html`<button class="btn" data-action="version">Nueva versión</button>` : ''}
         ${puede('capturar') && !lista.some(x => x.ejercicio === anio + 1) ? html`<button class="btn" data-action="siguiente">Presupuesto ${anio + 1}</button>` : ''}
-        ${editable ? html`<button class="btn" data-action="guardar">Guardar cambios</button>` : ''}
+        <button class="btn ghost" data-action="exportar">Exportar a Excel</button>
+        ${editable ? html`<button class="btn" data-action="importar">Importar desde Excel</button><button class="btn" data-action="guardar">Guardar cambios</button>` : ''}
         ${p.estado === 'borrador' && puede('config') ? html`<button class="btn primary" data-action="aprobar">Aprobar</button>` : ''}</div></div>
 
     ${p.estado !== 'borrador' ? html`<div class="grid top">
@@ -60,6 +62,8 @@ export async function render(el, ctx) {
   ctx.acciones({
     version: async (_, elx) => { if (elx.tagName === 'SELECT') { location.hash = `${ctx.base}/${elx.value}`; return; } const r = await capi('/presupuestos', { method: 'POST', body: { ejercicio: p.ejercicio } }); toast('Borrador creado a partir de la versión aprobada.'); location.hash = `${ctx.base}/${r.id}`; },
     siguiente: () => nuevo(anio + 1, ctx),
+    exportar: () => descargarPlantilla('presupuesto', { valores: val12 }),
+    importar: () => abrirImportacion('presupuesto', { opciones: { presupuesto_id: p.id }, extra: { valores: val12 }, onOk: () => ctx.recargar() }),
     guardar: async () => {
       const lineas = $$('input.cell', el).map(i => { const c = i.value.trim() ? parsePesos(i.value) : 0; if (c == null) { i.focus(); throw new Error(`Importe inválido en ${i.getAttribute('aria-label')}.`); } return { cuenta_id: +i.dataset.c, mes: +i.dataset.m, monto_cents: c }; });
       await capi(`/presupuestos/${p.id}/lineas`, { method: 'PUT', body: { lineas } }); toast('Presupuesto guardado.'); ctx.recargar();
