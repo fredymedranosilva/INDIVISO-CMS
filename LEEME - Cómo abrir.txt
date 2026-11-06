@@ -1,0 +1,16 @@
+INDIVISO CMS · CÓMO ABRIRLO EN SU COMPUTADORA
+
+1. Instale Node.js (gratuito, una sola vez): https://nodejs.org/es/download
+   Elija la versión LTS para su sistema e instálela con las opciones por omisión.
+
+2. Mac: dé doble clic en «Abrir Indiviso.command».
+   La primera vez macOS puede bloquearlo: dé CLIC DERECHO sobre el archivo → «Abrir» → «Abrir».
+   Windows: dé doble clic en «Abrir Indiviso (Windows).bat».
+
+3. Se abre una ventana negra (Terminal) con los usuarios y contraseñas de prueba,
+   y el navegador en http://localhost:4300. Entre con el usuario admin@indiviso.test.
+
+   No cierre la ventana negra mientras use Indiviso: si la cierra, el sistema se detiene.
+
+Los datos se guardan en la carpeta «Indiviso-datos» de su usuario (fuera de iCloud).
+Para empezar de cero con datos de demostración nuevos, borre esa carpeta y vuelva a abrir.

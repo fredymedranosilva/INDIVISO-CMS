@@ -2,6 +2,9 @@
 
 Node 24 + SQLite embebido (`node:sqlite`), sin dependencias externas.
 
+## Abrir con doble clic
+Instale Node.js LTS y abra **«Abrir Indiviso.command»** (Mac; la primera vez: clic derecho → Abrir) o **«Abrir Indiviso (Windows).bat»**. Crea los datos de demostración en `~/Indiviso-datos`, arranca el servidor y abre http://localhost:4300. Detalles en «LEEME - Cómo abrir.txt».
+
 ## Arranque local (pruebas)
 ```bash
 cd plataforma
