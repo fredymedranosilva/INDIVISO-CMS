@@ -195,7 +195,7 @@ export function fondoReserva(db, cid, desdeP, hastaP) {
   const ini = db.prepare(`SELECT COALESCE(SUM(m.haber_cents - m.debe_cents), 0) s FROM movimientos m JOIN polizas p ON p.id = m.poliza_id WHERE m.cuenta_id = ? AND p.periodo < ?`).get(k, desdeP).s;
   const r = db.prepare(`SELECT COALESCE(SUM(m.haber_cents), 0) a, COALESCE(SUM(m.debe_cents), 0) u FROM movimientos m JOIN polizas p ON p.id = m.poliza_id WHERE m.cuenta_id = ? AND p.periodo BETWEEN ? AND ?`).get(k, desdeP, hastaP);
   const usos = db.prepare(`SELECT e.folio, e.fecha, e.concepto, e.total_cents, pr.nombre AS proveedor FROM egresos e LEFT JOIN proveedores pr ON pr.id = e.proveedor_id
-    WHERE e.condominio_id = ? AND e.fondo = 'reserva' AND e.estado IN ('aprobado','pagado') AND substr(e.fecha, 1, 7) BETWEEN ? AND ? ORDER BY e.fecha`).all(cid, desdeP, hastaP);
+    WHERE e.condominio_id = ? AND e.fondo = 'reserva' AND e.fondo_id IS NULL AND e.estado IN ('aprobado','pagado') AND substr(e.fecha, 1, 7) BETWEEN ? AND ? ORDER BY e.fecha`).all(cid, desdeP, hastaP);
   return { inicial: ini, aportaciones: r.a, aplicaciones: r.u, final: ini + r.a - r.u, usos };
 }
 
@@ -283,4 +283,76 @@ export function verificarIntegridad(db, cid) {
     anticipos: { libro: libroAnt, submayor: subAnt, cuadra: libroAnt === subAnt },
     ok: !descuadradas.length && bal.cuadra && libroCxc === subCxc && libroAnt === subAnt,
   };
+}
+
+// ---------- Fondos: reserva y fondos específicos (pintura, impermeabilización...) ----------
+export function fondos(db, cid, desdeP, hastaP) {
+  const res = cuenta(db, cid, 'FONDO_RESERVA');
+  const lista = [{ id: null, nombre: 'Fondo de reserva', cuenta_id: res, meta_cents: null, descripcion: 'Aportación mensual de las cuotas ordinarias', sistema: true },
+    ...db.prepare('SELECT id, nombre, cuenta_id, meta_cents, descripcion, activo FROM fondos WHERE condominio_id = ? ORDER BY nombre').all(cid)];
+  const ini = db.prepare(`SELECT COALESCE(SUM(m.haber_cents - m.debe_cents), 0) s FROM movimientos m JOIN polizas p ON p.id = m.poliza_id WHERE m.cuenta_id = ? AND p.periodo < ?`);
+  const mov = db.prepare(`SELECT COALESCE(SUM(m.haber_cents), 0) a, COALESCE(SUM(m.debe_cents), 0) u FROM movimientos m JOIN polizas p ON p.id = m.poliza_id WHERE m.cuenta_id = ? AND p.periodo BETWEEN ? AND ?`);
+  const usos = db.prepare(`SELECT e.folio, e.fecha, e.concepto, e.total_cents, e.estado, pr.nombre AS proveedor FROM egresos e LEFT JOIN proveedores pr ON pr.id = e.proveedor_id
+    WHERE e.condominio_id = ? AND e.fondo = 'reserva' AND e.fondo_id IS ? AND e.estado IN ('aprobado','pagado') AND substr(e.fecha, 1, 7) BETWEEN ? AND ? ORDER BY e.fecha DESC`);
+  const rows = lista.map(f => {
+    const i = ini.get(f.cuenta_id, desdeP).s, m = mov.get(f.cuenta_id, desdeP, hastaP);
+    const saldo = i + m.a - m.u;
+    return { ...f, inicial: i, aportaciones: m.a, aplicaciones: m.u, saldo, avance: f.meta_cents ? saldo / f.meta_cents : null, usos: usos.all(cid, f.id, desdeP, hastaP) };
+  });
+  return { desde: desdeP, hasta: hastaP, fondos: rows, total: rows.reduce((a, f) => a + f.saldo, 0) };
+}
+
+// ---------- Cuentas por pagar: egresos aprobados sin pagar, por antigüedad ----------
+export function cuentasPorPagar(db, cid, corte = hoy()) {
+  const rows = db.prepare(`SELECT e.id, e.folio, e.fecha, e.concepto, e.total_cents, e.factura_folio, e.fondo, pr.id AS proveedor_id, pr.nombre AS proveedor, k.codigo AS partida_codigo, k.nombre AS partida
+    FROM egresos e LEFT JOIN proveedores pr ON pr.id = e.proveedor_id JOIN cuentas k ON k.id = e.cuenta_id
+    WHERE e.condominio_id = ? AND e.estado = 'aprobado' ORDER BY e.fecha`).all(cid);
+  const banda = d => d <= 30 ? 'd30' : d <= 60 ? 'd60' : d <= 90 ? 'd90' : 'd90mas';
+  const t = { d30: 0, d60: 0, d90: 0, d90mas: 0, total: 0 }, prov = new Map();
+  for (const r of rows) {
+    r.dias = Math.max(0, diffDays(corte, r.fecha)); r.banda = banda(r.dias);
+    t[r.banda] += r.total_cents; t.total += r.total_cents;
+    const k = r.proveedor_id || 0;
+    if (!prov.has(k)) prov.set(k, { proveedor: r.proveedor || 'Sin proveedor', d30: 0, d60: 0, d90: 0, d90mas: 0, total: 0, documentos: 0 });
+    const p = prov.get(k); p[r.banda] += r.total_cents; p.total += r.total_cents; p.documentos++;
+  }
+  const porAprobar = db.prepare("SELECT COUNT(*) n, COALESCE(SUM(total_cents), 0) s FROM egresos WHERE condominio_id = ? AND estado = 'por_aprobar'").get(cid);
+  return { corte, totales: t, por_aprobar: porAprobar, proveedores: [...prov.values()].sort((a, b) => b.total - a.total), documentos: rows };
+}
+
+// ---------- Liquidación anual: lo emitido y lo pagado de cada unidad, mes por mes ----------
+export function liquidacionAnual(db, cid, anio) {
+  const ps = meses(`${anio}-01`, `${anio}-12`);
+  const unidades = db.prepare(`SELECT u.id, u.clave, u.torre, u.cuota_cents, u.activo, (SELECT GROUP_CONCAT(p.nombre, ', ') FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id AND up.rol = 'propietario') AS propietario
+    FROM unidades u WHERE u.condominio_id = ? ORDER BY u.torre, u.clave`).all(cid);
+  const cargos = db.prepare(`SELECT c.unidad_id, c.periodo, SUM(c.monto_cents) emitido, SUM(COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a WHERE a.cargo_id = c.id AND a.revertida = 0 AND a.tipo = 'pago'), 0)) pagado,
+      SUM(COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a WHERE a.cargo_id = c.id AND a.revertida = 0 AND a.tipo = 'bonificacion'), 0)) bonificado
+    FROM cargos c WHERE c.condominio_id = ? AND c.cancelado_at IS NULL AND c.periodo BETWEEN ? AND ? GROUP BY c.unidad_id, c.periodo`).all(cid, ps[0], ps[11]);
+  const previo = db.prepare(`SELECT c.unidad_id, SUM(${SALDO_CARGO}) s FROM cargos c WHERE c.condominio_id = ? AND c.cancelado_at IS NULL AND c.periodo < ? GROUP BY c.unidad_id`).all(cid, ps[0]);
+  const prev = new Map(previo.map(r => [r.unidad_id, r.s]));
+  const map = new Map(unidades.map(u => [u.id, { ...u, adeudo_previo: prev.get(u.id) || 0, meses: Object.fromEntries(ps.map(p => [p, null])), emitido: 0, pagado: 0, bonificado: 0 }]));
+  for (const c of cargos) {
+    const u = map.get(c.unidad_id); if (!u) continue;
+    const saldo = c.emitido - c.pagado - c.bonificado;
+    u.meses[c.periodo] = { emitido: c.emitido, pagado: c.pagado, bonificado: c.bonificado, saldo, estado: saldo <= 0 ? 'pagado' : c.pagado + c.bonificado > 0 ? 'parcial' : 'pendiente' };
+    u.emitido += c.emitido; u.pagado += c.pagado; u.bonificado += c.bonificado;
+  }
+  const rows = [...map.values()].map(u => ({ ...u, saldo: u.emitido - u.pagado - u.bonificado }));
+  const tot = { emitido: 0, pagado: 0, bonificado: 0, saldo: 0, adeudo_previo: 0, meses: Object.fromEntries(ps.map(p => [p, { emitido: 0, pagado: 0 }])) };
+  for (const u of rows) {
+    for (const k of ['emitido', 'pagado', 'bonificado', 'saldo', 'adeudo_previo']) tot[k] += u[k];
+    for (const p of ps) if (u.meses[p]) { tot.meses[p].emitido += u.meses[p].emitido; tot.meses[p].pagado += u.meses[p].pagado; }
+  }
+  return { ejercicio: anio, periodos: ps, unidades: rows, totales: tot };
+}
+
+// ---------- Control de descuentos y bonificaciones ----------
+export function descuentos(db, cid, desde, hasta) {
+  const rows = db.prepare(`SELECT a.id, a.monto_cents, a.motivo, a.revertida, a.created_at, p.fecha, c.concepto, c.periodo, c.tipo, u.id AS unidad_id, u.clave, us.nombre AS autor
+    FROM aplicaciones a JOIN cargos c ON c.id = a.cargo_id JOIN unidades u ON u.id = c.unidad_id LEFT JOIN polizas p ON p.id = a.poliza_id LEFT JOIN usuarios us ON us.id = a.created_by
+    WHERE a.condominio_id = ? AND a.tipo = 'bonificacion' AND p.fecha BETWEEN ? AND ? ORDER BY p.fecha DESC, a.id DESC LIMIT 2000`).all(cid, desde, hasta);
+  const vig = rows.filter(r => !r.revertida);
+  const porMotivo = new Map();
+  for (const r of vig) { const k = /pronto pago/i.test(r.motivo || '') ? 'Pronto pago' : /convenio/i.test(r.motivo || '') ? 'Convenios' : 'Otras bonificaciones'; porMotivo.set(k, (porMotivo.get(k) || 0) + r.monto_cents); }
+  return { desde, hasta, total: vig.reduce((a, r) => a + r.monto_cents, 0), por_tipo: [...porMotivo].map(([tipo, monto]) => ({ tipo, monto })), movimientos: rows };
 }

@@ -182,20 +182,21 @@ function insertarCargos(db, cid, cargos, { concepto, fecha, origen }, user) {
   const nuevos = cargos.filter(c => c.monto > 0 && !existe.get(c.dedupe));
   if (!nuevos.length) return { emitidos: 0, omitidos: cargos.length, total: 0 };
   const cxc = cuenta(db, cid, 'CXC'), res = cuenta(db, cid, 'FONDO_RESERVA');
-  const porCuenta = new Map(); let reserva = 0;
+  const porCuenta = new Map(), porFondo = new Map();
   const lineas = nuevos.map(c => {
     const ci = cuenta(db, cid, c.cuentaClave || CUENTA_CARGO[c.tipo]);
     c.cuenta = ci;
     porCuenta.set(ci, (porCuenta.get(ci) || 0) + c.monto - c.reserva);
-    reserva += c.reserva;
+    const f = c.fondoCuenta || res;
+    porFondo.set(f, (porFondo.get(f) || 0) + c.reserva);
     return { cuenta: cxc, unidad: c.unidad, debe: c.monto, concepto: c.concepto };
   });
   for (const [ci, m] of porCuenta) if (m > 0) lineas.push({ cuenta: ci, haber: m, concepto });
-  if (reserva > 0) lineas.push({ cuenta: res, haber: reserva, concepto: `${concepto} · aportación a fondo de reserva` });
+  for (const [f, m] of porFondo) if (m > 0) lineas.push({ cuenta: f, haber: m, concepto: `${concepto} · aportación a ${f === res ? 'fondo de reserva' : 'fondo'}` });
   const pid = crearPoliza(db, cid, { tipo: 'D', fecha, concepto, origen, lineas }, user);
   const ins = db.prepare(`INSERT INTO cargos (condominio_id, unidad_id, tipo, concepto, periodo, fecha, vencimiento, monto_cents, reserva_cents,
-    cuenta_ingreso_id, poliza_id, lote, dedupe_key, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  for (const c of nuevos) ins.run(cid, c.unidad, c.tipo, c.concepto, c.periodo, fecha, c.vencimiento, c.monto, c.reserva, c.cuenta, pid, c.lote ?? null, c.dedupe, user?.id ?? null, Date.now());
+    cuenta_ingreso_id, poliza_id, lote, dedupe_key, fondo_cuenta_id, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  for (const c of nuevos) ins.run(cid, c.unidad, c.tipo, c.concepto, c.periodo, fecha, c.vencimiento, c.monto, c.reserva, c.cuenta, pid, c.lote ?? null, c.dedupe, c.reserva && c.fondoCuenta ? c.fondoCuenta : null, user?.id ?? null, Date.now());
   for (const uid of new Set(nuevos.map(c => c.unidad))) aplicarSaldoFavor(db, cid, uid, fecha, user);
   return { emitidos: nuevos.length, omitidos: cargos.length - nuevos.length, total: nuevos.reduce((a, c) => a + c.monto, 0), poliza_id: pid };
 }
@@ -205,16 +206,46 @@ const vencimientoDe = (c, periodo) => `${periodo}-${String(c.dia_vencimiento).pa
 export function emitirCuotas(db, cid, periodo, user, fecha = `${periodo}-01`) {
   const c = condo(db, cid);
   const unidades = db.prepare('SELECT * FROM unidades WHERE condominio_id = ? AND activo = 1 AND cuota_cents > 0 ORDER BY clave').all(cid);
-  if (!unidades.length) fail(400, 'No hay unidades activas con cuota asignada.');
+  const recurrentes = cargosRecurrentesDe(db, cid, periodo);
+  if (!unidades.length && !recurrentes.length) fail(400, 'No hay unidades activas con cuota asignada.');
   const concepto = `Cuota ordinaria ${nombrePeriodo(periodo)}`;
-  return insertarCargos(db, cid, unidades.map(u => ({
+  return insertarCargos(db, cid, [...unidades.map(u => ({
     unidad: u.id, tipo: 'ordinaria', concepto, periodo, vencimiento: vencimientoDe(c, periodo), monto: u.cuota_cents,
     reserva: Math.round(u.cuota_cents * c.pct_reserva_bp / 10000), dedupe: `ORD:${u.id}:${periodo}`,
-  })), { concepto: `Emisión de cuotas ordinarias · ${nombrePeriodo(periodo)}`, fecha, origen: 'emision' }, user);
+  })), ...recurrentes.map(r => ({ ...r, vencimiento: vencimientoDe(c, periodo) }))], { concepto: `Emisión de cuotas ordinarias · ${nombrePeriodo(periodo)}`, fecha, origen: 'emision' }, user);
 }
+
+// Adeudos recurrentes: cargos fijos que se emiten cada mes junto con la cuota ordinaria
+// (estacionamiento adicional, bodega, cuota de subsidio, extraordinaria en mensualidades...).
+export function cargosRecurrentesDe(db, cid, periodo) {
+  const rs = db.prepare(`SELECT * FROM cargos_recurrentes WHERE condominio_id = ? AND activo = 1 AND desde <= ? AND (hasta IS NULL OR hasta >= ?)`).all(cid, periodo, periodo);
+  const activas = db.prepare('SELECT id FROM unidades WHERE condominio_id = ? AND activo = 1 ORDER BY clave').all(cid).map(u => u.id);
+  const out = [];
+  for (const r of rs) for (const uid of r.unidad_id ? [r.unidad_id].filter(x => activas.includes(x)) : activas)
+    out.push({ unidad: uid, tipo: r.tipo, concepto: `${r.concepto} ${nombrePeriodo(periodo)}`, periodo, monto: r.monto_cents, reserva: 0, dedupe: `RCU:${r.id}:${uid}:${periodo}` });
+  return out;
+}
+
+export function crearCargoRecurrente(db, cid, d, user) {
+  if (d.unidad_id) unidadDe(db, cid, d.unidad_id);
+  if (d.hasta && d.hasta < d.desde) fail(400, 'El periodo final es anterior al inicial.');
+  return Number(db.prepare('INSERT INTO cargos_recurrentes (condominio_id, unidad_id, tipo, concepto, monto_cents, desde, hasta, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(cid, d.unidad_id ?? null, d.tipo, d.concepto, d.monto_cents, d.desde, d.hasta ?? null, user?.id ?? null, Date.now()).lastInsertRowid);
+}
+
+// ---------- Fondos (además del fondo de reserva) ----------
+export function crearFondo(db, cid, d, user) {
+  if (db.prepare('SELECT 1 FROM fondos WHERE condominio_id = ? AND nombre = ? COLLATE NOCASE').get(cid, d.nombre)) fail(409, 'Ya existe un fondo con ese nombre.', 'DUPLICADO');
+  const n = db.prepare("SELECT COUNT(*) n FROM cuentas WHERE condominio_id = ? AND codigo LIKE '3102-%'").get(cid).n + 1;
+  const k = Number(db.prepare("INSERT INTO cuentas (condominio_id, codigo, nombre, tipo, naturaleza) VALUES (?,?,?,'patrimonio','A')").run(cid, `3102-${String(n).padStart(2, '0')}`, `Fondo · ${d.nombre}`).lastInsertRowid);
+  return Number(db.prepare('INSERT INTO fondos (condominio_id, nombre, cuenta_id, meta_cents, descripcion, created_by, created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(cid, d.nombre, k, d.meta_cents ?? null, d.descripcion ?? null, user?.id ?? null, Date.now()).lastInsertRowid);
+}
+const fondoDe = (db, cid, id) => db.prepare('SELECT * FROM fondos WHERE id = ? AND condominio_id = ? AND activo = 1').get(id, cid) || fail(400, 'Fondo inválido.');
 
 export function emitirExtraordinaria(db, cid, d, user) {
   const c = condo(db, cid);
+  const fondo = d.destino === 'fondo' ? fondoDe(db, cid, d.fondo_id) : null;
   let unidades = db.prepare('SELECT * FROM unidades WHERE condominio_id = ? AND activo = 1 ORDER BY clave').all(cid);
   if (d.unidades?.length) { const s = new Set(d.unidades.map(Number)); unidades = unidades.filter(u => s.has(u.id)); }
   if (!unidades.length) fail(400, 'Seleccione al menos una unidad.');
@@ -224,7 +255,7 @@ export function emitirExtraordinaria(db, cid, d, user) {
   const periodo = periodoDe(d.fecha);
   return { lote, ...insertarCargos(db, cid, unidades.map((u, i) => ({
     unidad: u.id, tipo: 'extraordinaria', concepto: d.concepto, periodo, vencimiento: d.vencimiento || vencimientoDe(c, periodo),
-    monto: partes[i], reserva: d.destino === 'reserva' ? partes[i] : 0, dedupe: `EXT:${lote}:${u.id}`, lote,
+    monto: partes[i], reserva: d.destino !== 'operacion' ? partes[i] : 0, fondoCuenta: fondo?.cuenta_id, dedupe: `EXT:${lote}:${u.id}`, lote,
   })), { concepto: `Cuota extraordinaria · ${d.concepto}`, fecha: d.fecha, origen: 'extraordinaria' }, user) };
 }
 
@@ -256,17 +287,17 @@ export function calcularRecargos(db, cid, periodo, user) {
   })), { concepto: `Recargos por mora · ${nombrePeriodo(periodo)}`, fecha: corte, origen: 'recargos' }, user);
 }
 
-export function bonificar(db, cid, cargoId, monto, motivo, user) {
+export function bonificar(db, cid, cargoId, monto, motivo, user, fechaAplica = null) {
   const c = db.prepare(`SELECT c.*, ${SALDO_CARGO} AS saldo_cents FROM cargos c WHERE c.id = ? AND c.condominio_id = ?`).get(cargoId, cid) || fail(404, 'Cargo no encontrado');
   if (c.cancelado_at) fail(409, 'El cargo está cancelado.');
   if (monto > c.saldo_cents) fail(400, 'La bonificación excede el saldo del cargo.');
   const resPart = Math.round(monto * c.reserva_cents / c.monto_cents);
-  const fecha = fechaContable(db, cid, hoy());
+  const fecha = fechaContable(db, cid, fechaAplica || hoy());
   const pid = crearPoliza(db, cid, {
     tipo: 'D', fecha, concepto: `Bonificación: ${c.concepto} · ${motivo}`, origen: 'bonificacion', origen_id: c.id,
     lineas: [
       { cuenta: cuenta(db, cid, 'BONIF'), debe: monto - resPart, concepto: motivo },
-      { cuenta: cuenta(db, cid, 'FONDO_RESERVA'), debe: resPart, concepto: motivo },
+      { cuenta: c.fondo_cuenta_id || cuenta(db, cid, 'FONDO_RESERVA'), debe: resPart, concepto: motivo },
       { cuenta: cuenta(db, cid, 'CXC'), unidad: c.unidad_id, haber: monto, concepto: `Bonificación: ${c.concepto}` },
     ],
   }, user);
@@ -283,7 +314,7 @@ export function cancelarCargo(db, cid, cargoId, motivo, user) {
     tipo: 'D', fecha: fechaContable(db, cid, hoy()), concepto: `Cancelación de cargo: ${c.concepto} · ${motivo}`, origen: 'cancelacion_cargo', origen_id: c.id,
     lineas: [
       { cuenta: c.cuenta_ingreso_id, debe: c.monto_cents - c.reserva_cents, concepto: motivo },
-      { cuenta: cuenta(db, cid, 'FONDO_RESERVA'), debe: c.reserva_cents, concepto: motivo },
+      { cuenta: c.fondo_cuenta_id || cuenta(db, cid, 'FONDO_RESERVA'), debe: c.reserva_cents, concepto: motivo },
       { cuenta: cuenta(db, cid, 'CXC'), unidad: c.unidad_id, haber: c.monto_cents, concepto: `Cancelación: ${c.concepto}` },
     ],
   }, user);
@@ -311,9 +342,31 @@ export function posiblesDuplicados(db, cid, d) {
     AND estado IN ('por_validar','aplicado') AND ABS(julianday(fecha) - julianday(?)) <= 3`).all(cid, d.unidad_id, d.monto_cents, d.fecha);
 }
 
+// Descuento por pronto pago: si el pago (por su fecha) llega a tiempo y alcanza para liquidar la cuota
+// ordinaria completa menos el descuento, la diferencia se registra como bonificación antes de aplicar el pago.
+export const MOTIVO_PRONTO_PAGO = 'Descuento por pronto pago';
+function descuentoProntoPago(db, cid, u, pago, fecha, user) {
+  const c = condo(db, cid);
+  if (!c.pronto_pago_bp || !c.pronto_pago_dia) return 0;
+  const ya = db.prepare("SELECT 1 FROM aplicaciones WHERE cargo_id = ? AND tipo = 'bonificacion' AND revertida = 0 AND motivo = ?");
+  let resto = pago.monto_cents, total = 0;
+  for (const cg of cargosAbiertos(db, u.id)) {
+    if (resto <= 0) break;
+    const limite = `${cg.periodo}-${String(c.pronto_pago_dia).padStart(2, '0')}`;
+    const elegible = cg.tipo === 'ordinaria' && cg.saldo_cents === cg.monto_cents && pago.fecha <= limite && !ya.get(cg.id, MOTIVO_PRONTO_PAGO);
+    const desc = elegible ? Math.round(cg.monto_cents * c.pronto_pago_bp / 10000) : 0;
+    if (desc > 0 && resto >= cg.saldo_cents - desc) {
+      bonificar(db, cid, cg.id, desc, MOTIVO_PRONTO_PAGO, user, fecha);
+      resto -= cg.saldo_cents - desc; total += desc;
+    } else resto -= Math.min(resto, cg.saldo_cents);
+  }
+  return total;
+}
+
 function contabilizarPago(db, cid, pago, user) {
   const u = unidadDe(db, cid, pago.unidad_id);
   const fecha = fechaContable(db, cid, pago.fecha);
+  const descuento = descuentoProntoPago(db, cid, u, pago, fecha, user);
   const { plan, resto } = planAplicacion(cargosAbiertos(db, u.id), pago.monto_cents);
   const aplicado = pago.monto_cents - resto;
   const folio = pago.folio ?? db.prepare('SELECT COALESCE(MAX(folio), 0) + 1 f FROM pagos WHERE condominio_id = ?').get(cid).f;
@@ -328,7 +381,7 @@ function contabilizarPago(db, cid, pago, user) {
   }, user);
   for (const p of plan) insAplic(db, cid, { ...p, pago_id: pago.id, tipo: 'pago', poliza_id: pid }, user);
   db.prepare("UPDATE pagos SET estado = 'aplicado', folio = ?, poliza_id = ?, validado_por = ?, validado_at = ? WHERE id = ?").run(folio, pid, user?.id ?? null, Date.now(), pago.id);
-  return { folio, aplicado, saldo_favor: resto };
+  return { folio, aplicado, saldo_favor: resto, descuento };
 }
 
 export function registrarPago(db, cid, d, user, { validar = true } = {}) {
@@ -420,7 +473,7 @@ export function saldoInicial(db, cid, d, user) {
 // ---------- Egresos (con segregación de funciones) ----------
 function provisionarEgreso(db, cid, e, user) {
   const prov = e.proveedor_id ? db.prepare('SELECT nombre FROM proveedores WHERE id = ?').get(e.proveedor_id)?.nombre : null;
-  const destino = e.fondo === 'reserva' ? cuenta(db, cid, 'FONDO_RESERVA') : e.cuenta_id;
+  const destino = e.fondo !== 'reserva' ? e.cuenta_id : e.fondo_id ? fondoDe(db, cid, e.fondo_id).cuenta_id : cuenta(db, cid, 'FONDO_RESERVA');
   const pid = crearPoliza(db, cid, {
     tipo: 'D', fecha: fechaContable(db, cid, e.fecha), concepto: `Provisión E-${e.folio} · ${e.concepto}${prov ? ' · ' + prov : ''}`, origen: 'egreso', origen_id: e.id,
     lineas: [
@@ -445,9 +498,10 @@ export function crearEgreso(db, cid, d, user) {
   if (d.proveedor_id && d.factura_folio && db.prepare("SELECT 1 FROM egresos WHERE condominio_id = ? AND proveedor_id = ? AND factura_folio = ? AND estado NOT IN ('cancelado','rechazado')").get(cid, d.proveedor_id, d.factura_folio))
     fail(409, 'Este proveedor ya tiene registrada una factura con ese folio.', 'DUPLICADO');
   const folio = db.prepare('SELECT COALESCE(MAX(folio), 0) + 1 f FROM egresos WHERE condominio_id = ?').get(cid).f;
-  const r = db.prepare(`INSERT INTO egresos (condominio_id, folio, proveedor_id, cuenta_id, fondo, fecha, concepto, subtotal_cents, iva_cents, retenciones_cents, total_cents,
-    factura_folio, cfdi_uuid, estado, comprobante_id, idem_key, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    cid, folio, d.proveedor_id ?? null, d.cuenta_id, d.fondo || 'operacion', d.fecha, d.concepto, d.subtotal_cents, d.iva_cents, d.retenciones_cents, total,
+  const fondoId = d.fondo_id ? fondoDe(db, cid, d.fondo_id).id : null; // un fondo específico siempre se paga como uso de fondo (requiere aprobación)
+  const r = db.prepare(`INSERT INTO egresos (condominio_id, folio, proveedor_id, cuenta_id, fondo, fondo_id, fecha, concepto, subtotal_cents, iva_cents, retenciones_cents, total_cents,
+    factura_folio, cfdi_uuid, estado, comprobante_id, idem_key, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    cid, folio, d.proveedor_id ?? null, d.cuenta_id, fondoId ? 'reserva' : d.fondo || 'operacion', fondoId, d.fecha, d.concepto, d.subtotal_cents, d.iva_cents, d.retenciones_cents, total,
     d.factura_folio ?? null, d.cfdi_uuid ?? null, 'por_aprobar', d.comprobante_id ?? null, d.idem_key, user.id, Date.now());
   const e = db.prepare('SELECT * FROM egresos WHERE id = ?').get(Number(r.lastInsertRowid));
   const requiere = total >= c.umbral_aprobacion_cents || e.fondo === 'reserva';

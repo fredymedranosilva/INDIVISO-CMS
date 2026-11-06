@@ -394,3 +394,24 @@ a.row-link { display: flex; color: inherit; border-radius: 4px; transition: back
 .imp-resumen b { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .imp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .dlg-body h3 { font-size: var(--fs-body); font-weight: 600; }
+
+/* Comunidad */
+.avisos { display: grid; gap: var(--gap); }
+.avisos > .panel + .panel { margin-top: 0; }
+.aviso.fijado { border-left: 3px solid var(--brass); }
+.aviso header h2, .encuesta header h2 { margin-bottom: 2px; }
+.texto { white-space: pre-wrap; line-height: 1.55; }
+.resultados { list-style: none; margin: 12px 0 8px; padding: 0; display: grid; gap: 12px; }
+.votar { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--rule); justify-items: start; }
+.votar fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
+/* Liquidación anual */
+.sabana td.mes { text-align: center; font-size: 12px; padding-left: 4px; padding-right: 4px; }
+.st { display: inline-block; min-width: 54px; padding: 2px 4px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.st.pagado { background: var(--pill-positive-bg); color: var(--pill-positive-ink); }
+.st.parcial { background: var(--pill-warning-bg); color: var(--pill-warning-ink); }
+.st.pendiente { background: var(--pill-negative-bg); color: var(--pill-negative-ink); }
+.sabana td:first-child { white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.leyenda .st { min-width: 22px; text-align: center; }
+.leyenda { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--fs-small); color: var(--muted); }
+.filters.pad { padding: 14px var(--card-pad) 0; margin-bottom: 6px; }
+.grid + .grid { margin-top: var(--gap); }

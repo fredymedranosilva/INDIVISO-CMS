@@ -48,6 +48,8 @@ for (const c of me.condominios) {
   for (const r of ['proveedores', 'emisiones', 'config', 'convenios', 'cuentas', 'presupuestos', 'periodos', 'integridad', 'usuarios', 'personas']) await g(`${b}/${r}`);
   await g(`${b}/auditoria?limit=200`);
   await g(`${b}/importar/catalogos`); // plantillas de Excel descargables también en la demo
+  for (const r of ['fondos', 'cargos-recurrentes', 'encuestas', 'reportes/cxp', `reportes/liquidacion?ejercicio=${Y}`, `reportes/fondos?desde=${Y}-01&hasta=${P}`, `descuentos?desde=${Y}-01-01&hasta=${H}`, 'egresos?estado=aprobado']) await g(`${b}/${r}`);
+  for (const t of ['aviso', 'evento', 'documento', 'telefono', 'perdido']) await g(`${b}/comunidad?tipo=${t}`);
   const bancos = await g(`${b}/bancos`);
   for (const k of bancos) {
     await g(`${b}/bancos/${k.id}/movimientos?estado=pendientes`);

@@ -1,15 +1,23 @@
 // Portal del residente: su saldo, cómo pagar, reportar un pago con comprobante, recibos y transparencia.
-import { S, capi, html, mount, $, pesos, fecha, hoy, tabla, m, pill, ESTADO_PAGO, METODOS, toast, dialogo, val, pesosDe, idem, cargando, imprimir, pct, mesCorto } from '../ui.js';
+import { S, capi, html, mount, $, pesos, fecha, fechaHora, hoy, tabla, m, pill, ESTADO_PAGO, METODOS, toast, dialogo, val, pesosDe, idem, cargando, imprimir, pct, mesCorto } from '../ui.js';
 import { subirArchivo, docEstadoCuenta, imprimirRecibo } from './comun.js';
 
 export async function render(el, ctx) {
   cargando(el);
-  const d = await capi('/mi');
+  const [d, avisos, eventos, encuestas] = await Promise.all([capi('/mi'), capi('/comunidad?tipo=aviso'), capi('/comunidad?tipo=evento'), capi('/encuestas')]);
+  const pendientesVoto = encuestas.filter(e => e.estado === 'abierta' && !e.mis_votos.length);
+  const proximos = eventos.filter(e => e.fecha >= hoy()).slice(0, 3);
   const c = S.condos.find(x => x.id === S.cid);
   if (!d.unidades.length) return mount(el, html`<div class="title-row"><div><h1>${c.nombre}</h1><p class="sub">Su usuario aún no está vinculado a una unidad. Contacte a la administración.</p></div></div>`);
   const t = d.transparencia;
   mount(el, html`
     <div class="title-row"><div><p class="crumbs">${c.nombre}</p><h1>Mi estado de cuenta</h1><p class="sub">Hola, ${S.me.nombre.split(' ')[0]}. Aquí ve su saldo, sus recibos y cómo se usan las cuotas del condominio.</p></div></div>
+    ${pendientesVoto.length ? html`<p class="note warn top-gap">Hay ${pendientesVoto.length === 1 ? 'una votación abierta' : `${pendientesVoto.length} votaciones abiertas`}: «${pendientesVoto[0].pregunta}». <a class="link" href="#/c/${S.cid}/comunidad/encuestas">Votar</a></p>` : ''}
+    ${avisos.length || proximos.length ? html`<div class="grid top">
+      <section class="panel c7"><header><h2>Avisos</h2><a class="link" href="#/c/${S.cid}/comunidad/avisos">Ver todos</a></header>
+        <ul class="rows">${avisos.slice(0, 3).map(a => html`<li><span class="t"><b>${a.titulo}</b><span>${fechaHora(a.created_at)}</span></span>${a.fijado ? pill(['Importante', 'warn']) : ''}</li>`)}${avisos.length ? '' : html`<li><span class="t faint">Sin avisos.</span></li>`}</ul></section>
+      <section class="panel c5"><header><h2>Próximos eventos</h2><a class="link" href="#/c/${S.cid}/comunidad/calendario">Calendario</a></header>
+        <ul class="rows">${proximos.map(e => html`<li><span class="t"><b>${e.titulo}</b><span>${e.lugar || ''}</span></span><span class="v">${fecha(e.fecha)}<span>${e.hora || ''}</span></span></li>`)}${proximos.length ? '' : html`<li><span class="t faint">Sin eventos próximos.</span></li>`}</ul></section></div>` : ''}
     ${d.unidades.map(u => html`<div class="grid top">
       <section class="panel c5"><header><h2>Unidad ${u.unidad.clave}</h2>${pill(u.saldo_final > 0 ? ['Saldo pendiente', u.pendientes.some(p => p.vencimiento < hoy()) ? 'neg' : 'warn'] : u.saldo_final < 0 ? ['Saldo a favor', 'pos'] : ['Al corriente', 'pos'])}</header>
         <div class="hero-fig"><span class="kpi-value">${pesos(Math.abs(u.saldo_final))}</span><span class="of">${u.saldo_final > 0 ? 'por pagar' : u.saldo_final < 0 ? 'a su favor' : 'sin adeudo'}</span></div>

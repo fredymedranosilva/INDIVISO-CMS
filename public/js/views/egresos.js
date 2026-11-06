@@ -11,11 +11,27 @@ export async function render(el, ctx) {
   const [t, c] = await Promise.all([capi('/tablero'), capi('/config')]);
   mount(el, html`<div class="title-row"><div><h1>Egresos</h1><p class="sub">Todo egreso de ${pesos(c.umbral_aprobacion_cents)} o más, y todo uso del fondo de reserva, requiere aprobación de un usuario distinto a quien lo capturó.</p></div>
     <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarEgresos">Importar desde Excel</button><button class="btn primary" data-action="nuevo">Capturar egreso</button>` : ''}</div></div>
-    ${tabs([['egresos', 'Egresos'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
+    ${tabs([['egresos', 'Egresos'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['porpagar', 'Cuentas por pagar'], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
   ctx.acciones({ nuevo: () => capturar(ctx), importarEgresos: () => abrirImportacion('egresos', { onOk: () => ctx.recargar() }) });
   const body = $('#eg-body', el);
   if (sub === 'proveedores') return proveedores(body, ctx);
+  if (sub === 'porpagar') { await porPagar(body); return lista($('#eg-lista', body), ctx, { estado: 'aprobado' }, 'pagar'); }
   return lista(body, ctx, sub === 'aprobar' ? { estado: 'por_aprobar' } : { estado: q.get('estado') || '', desde: q.get('desde') || `${addMonths(periodoActual(), -2)}-01`, hasta: q.get('hasta') || hoy() }, sub === 'aprobar');
+}
+
+// Cuentas por pagar: egresos aprobados sin pagar, por proveedor y antigüedad.
+async function porPagar(el) {
+  const r = await capi('/reportes/cxp');
+  const t = r.totales;
+  mount(el, html`<div class="grid top">
+    <section class="panel c12"><header><h2>Por pagar a proveedores</h2><span class="meta">Antigüedad desde la fecha del gasto · ${r.por_aprobar.n ? `${r.por_aprobar.n} más esperando aprobación (${pesos(r.por_aprobar.s)})` : 'nada esperando aprobación'}</span></header>
+      <div class="kpis"><div class="kpi"><p class="label">Total por pagar</p><p class="kpi-value md">${pesos(t.total)}</p></div><div class="kpi"><p class="label">0 a 30 días</p><p class="kpi-value md">${pesos(t.d30)}</p></div>
+        <div class="kpi"><p class="label">31 a 60 días</p><p class="kpi-value md">${pesos(t.d60)}</p></div><div class="kpi"><p class="label">61 a 90 días</p><p class="kpi-value md ${t.d90 ? 'neg-t' : ''}">${pesos(t.d90)}</p></div>
+        <div class="kpi"><p class="label">Más de 90 días</p><p class="kpi-value md ${t.d90mas ? 'neg-t' : ''}">${pesos(t.d90mas)}</p></div></div></section>
+    <section class="panel flush c12"><header><h2>Por proveedor</h2></header>
+      ${tabla([{ t: 'Proveedor', k: x => html`<b>${x.proveedor}</b><span class="sub-t">${x.documentos} ${x.documentos === 1 ? 'documento' : 'documentos'}</span>` }, { t: '0–30', num: true, k: x => m(x.d30) }, { t: '31–60', num: true, k: x => m(x.d60) },
+        { t: '61–90', num: true, k: x => m(x.d90) }, { t: '+90', num: true, k: x => m(x.d90mas) }, { t: 'Total', num: true, k: x => html`<b>${pesos(x.total)}</b>` }], r.proveedores, { vacio: 'No hay cuentas por pagar.', pie: r.proveedores.length ? ['Total', pesos(t.d30), pesos(t.d60), pesos(t.d90), pesos(t.d90mas), pesos(t.total)] : null })}</section>
+    <div class="c12" id="eg-lista"></div></div>`);
 }
 
 async function lista(el, ctx, f, cola) {
@@ -28,11 +44,11 @@ async function lista(el, ctx, f, cola) {
       <label class="field"><span>Hasta</span><input type="date" name="hasta" value="${f.hasta}"></label>
       <label class="field"><span>Estado</span><select name="estado"><option value="">Todos</option>${Object.entries(ESTADO_EGRESO).map(([k, [l]]) => html`<option value="${k}" ${k === f.estado ? raw('selected') : ''}>${l}</option>`)}</select></label>
       <button class="btn">Filtrar</button><span class="spacer"></span><button class="btn ghost" type="button" data-action="csv">Exportar CSV</button></form>`}
-    <section class="panel flush"><header><h2>${cola ? 'Esperando aprobación' : `${rows.length} egresos`}</h2><span class="meta">${cola ? 'Revise la factura y la partida antes de aprobar.' : `Aprobados y pagados: ${pesos(vigentes.reduce((a, r) => a + r.total_cents, 0))}`}</span></header>
+    <section class="panel flush"><header><h2>${cola === 'pagar' ? 'Documentos por pagar' : cola ? 'Esperando aprobación' : `${rows.length} egresos`}</h2><span class="meta">${cola === 'pagar' ? 'Registre el pago para que salga de bancos y de proveedores por pagar.' : cola ? 'Revise la factura y la partida antes de aprobar.' : `Aprobados y pagados: ${pesos(vigentes.reduce((a, r) => a + r.total_cents, 0))}`}</span></header>
     ${tabla([
       { t: 'Folio', k: r => `E-${r.folio}` },
       { t: 'Fecha', k: r => fecha(r.fecha), cls: 'nowrap' },
-      { t: 'Concepto', k: r => html`${r.concepto}<span class="sub-t">${r.proveedor || 'Sin proveedor'}${r.fondo === 'reserva' ? ' · fondo de reserva' : ''}</span>` },
+      { t: 'Concepto', k: r => html`${r.concepto}<span class="sub-t">${r.proveedor || 'Sin proveedor'}${r.fondo === 'reserva' ? ` · ${r.fondo_nombre ? `fondo ${r.fondo_nombre}` : 'fondo de reserva'}` : ''}</span>` },
       { t: 'Partida', k: r => html`${r.partida}<span class="sub-t">${r.partida_codigo}</span>`, cls: 'hide-m' },
       { t: 'Factura', k: r => r.cfdi_uuid ? html`<span title="${r.cfdi_uuid}">${r.factura_folio || 'CFDI'} · ${r.cfdi_uuid.slice(0, 8)}…</span>` : html`<span class="faint">—</span>`, cls: 'hide-m' },
       { t: 'Total', num: true, k: r => m(r.total_cents) },
@@ -42,7 +58,7 @@ async function lista(el, ctx, f, cola) {
         ${r.estado === 'por_aprobar' && puede('aprobar') ? html`<button class="btn sm primary" data-action="aprobar" data-id="${r.id}">Aprobar</button><button class="btn sm" data-action="rechazar" data-id="${r.id}">Rechazar</button>` : ''}
         ${r.estado === 'aprobado' && puede('capturar') ? html`<button class="btn sm" data-action="pagar" data-id="${r.id}" data-total="${r.total_cents}" data-folio="${r.folio}">Pagar</button>` : ''}
         ${['aprobado', 'pagado', 'por_aprobar'].includes(r.estado) && puede('cancelar') ? html`<button class="link neg" data-action="cancelar" data-id="${r.id}" data-folio="${r.folio}">Cancelar</button>` : ''}</span>` },
-    ], rows, { vacio: cola ? 'No hay egresos esperando aprobación.' : 'Sin egresos en el rango.' })}</section>`);
+    ], rows, { vacio: cola === 'pagar' ? 'No hay egresos por pagar.' : cola ? 'No hay egresos esperando aprobación.' : 'Sin egresos en el rango.' })}</section>`);
   $('[data-filtros]', el)?.addEventListener('submit', e => { e.preventDefault(); const x = e.target; location.hash = `${ctx.base}/egresos?desde=${x.desde.value}&hasta=${x.hasta.value}&estado=${x.estado.value}`; });
   ctx.acciones({
     csv: () => descargar(`/api/c/${S.cid}/export/egresos.csv`, 'egresos.csv'),
@@ -63,7 +79,7 @@ async function lista(el, ctx, f, cola) {
 }
 
 async function capturar(ctx) {
-  const [cuentas, provs, c] = await Promise.all([capi('/cuentas'), capi('/proveedores'), capi('/config')]);
+  const [cuentas, provs, c, fondos] = await Promise.all([capi('/cuentas'), capi('/proveedores'), capi('/config'), capi('/fondos')]);
   const partidas = cuentas.filter(k => k.tipo === 'egreso' && k.activo);
   const key = idem();
   let comprobante = null;
@@ -76,7 +92,7 @@ async function capturar(ctx) {
       <label class="field"><span>Partida presupuestal</span><select name="cuenta" required>${partidas.map(k => html`<option value="${k.id}">${k.codigo} · ${k.nombre}</option>`)}</select></label>
       <label class="field full"><span>Concepto</span><input name="concepto" required maxlength="200"></label>
       <label class="field"><span>Fecha del gasto</span><input type="date" name="fecha" value="${hoy()}" max="${hoy()}" required></label>
-      <label class="field"><span>Fondo</span><select name="fondo"><option value="operacion">Operación</option><option value="reserva">Fondo de reserva (requiere aprobación)</option></select></label>
+      <label class="field"><span>Fondo</span><select name="fondo"><option value="operacion">Operación</option><option value="reserva">Fondo de reserva (requiere aprobación)</option>${fondos.filter(x => x.activo).map(x => html`<option value="fondo:${x.id}">Fondo ${x.nombre} (requiere aprobación)</option>`)}</select></label>
       <label class="field"><span>Subtotal</span><input name="sub" class="num-in" inputmode="decimal" required></label>
       <label class="field"><span>IVA <button type="button" class="link small" data-iva>calcular 16%</button></span><input name="iva" class="num-in" inputmode="decimal" value="0.00"></label>
       <label class="field"><span>Retenciones</span><input name="ret" class="num-in" inputmode="decimal" value="0.00"></label>
@@ -110,7 +126,7 @@ async function capturar(ctx) {
     },
     onSubmit: async f => {
       const r = await capi('/egresos', { method: 'POST', body: {
-        proveedor_id: f.prov.value ? +f.prov.value : null, cuenta_id: +f.cuenta.value, fondo: f.fondo.value, fecha: val(f, 'fecha'), concepto: val(f, 'concepto'),
+        proveedor_id: f.prov.value ? +f.prov.value : null, cuenta_id: +f.cuenta.value, fondo: f.fondo.value.startsWith('fondo:') ? 'reserva' : f.fondo.value, fondo_id: +f.fondo.value.split(':')[1] || null, fecha: val(f, 'fecha'), concepto: val(f, 'concepto'),
         subtotal_cents: pesosDe(f, 'sub', { cero: true }), iva_cents: pesosDe(f, 'iva', { requerido: false, cero: true }), retenciones_cents: pesosDe(f, 'ret', { requerido: false, cero: true }),
         factura_folio: val(f, 'folio') || null, cfdi_uuid: val(f, 'uuid') || null, comprobante_id: comprobante, idem_key: key } });
       toast(r.requiere_aprobacion ? `Egreso E-${r.folio} capturado · espera aprobación` : `Egreso E-${r.folio} registrado y provisionado`);
