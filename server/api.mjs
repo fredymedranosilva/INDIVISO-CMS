@@ -10,6 +10,7 @@ import * as R from './reportes.mjs';
 import { membresias } from './auth.mjs';
 import { crearRespaldo, verificarRespaldo, rutaRespaldo } from './backup.mjs';
 import { importar, catalogosPlantilla } from './importar.mjs';
+import { rutasComunidad } from './comunidad.mjs';
 
 const FILES_DIR = join(DATA_DIR, 'archivos');
 mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 });
@@ -24,6 +25,7 @@ const PERMS = {
   config: ['admin'],
   usuarios: ['admin'],
   auditoria: ['admin', 'comite'],
+  comunicar: ['admin', 'comite'],   // avisos, documentos, encuestas
   residente: ['residente'],
 };
 function rolEn(ctx, cid) {
@@ -179,10 +181,12 @@ export const apiRoutes = [
   ['GET', `${C}/config`, { perm: 'ver' }, ctx => F.condo(ctx.db, ctx.cid)],
   ['PUT', `${C}/config`, { perm: 'config' }, ctx => {
     const b = v(ctx.body, { nombre: 'str|max120', razon_social: 'str|opt|max160', rfc: 'rfc|opt', direccion: 'str|opt|max250', ciudad: 'str|opt|max80',
-      dia_vencimiento: 'int|min1|max28', dias_gracia: 'int|min0|max60', tasa_recargo_bp: 'int|min0|max2000', pct_reserva_bp: 'int|min0|max5000', umbral_aprobacion_cents: 'cents|zero' });
+      dia_vencimiento: 'int|min1|max28', dias_gracia: 'int|min0|max60', tasa_recargo_bp: 'int|min0|max2000', pct_reserva_bp: 'int|min0|max5000', umbral_aprobacion_cents: 'cents|zero',
+      pronto_pago_bp: 'int|min0|max5000|opt', pronto_pago_dia: 'int|min0|max28|opt' });
+    if ((b.pronto_pago_bp > 0) !== (b.pronto_pago_dia > 0) && (b.pronto_pago_bp || b.pronto_pago_dia)) fail(400, 'Para el descuento por pronto pago indique el porcentaje y el día límite.');
     return escribir(ctx, 'config_actualizada', 'condominio', () => {
-      ctx.db.prepare(`UPDATE condominios SET nombre=?, razon_social=?, rfc=?, direccion=?, ciudad=?, dia_vencimiento=?, dias_gracia=?, tasa_recargo_bp=?, pct_reserva_bp=?, umbral_aprobacion_cents=? WHERE id=?`)
-        .run(b.nombre, b.razon_social, b.rfc, b.direccion, b.ciudad, b.dia_vencimiento, b.dias_gracia, b.tasa_recargo_bp, b.pct_reserva_bp, b.umbral_aprobacion_cents, ctx.cid);
+      ctx.db.prepare(`UPDATE condominios SET nombre=?, razon_social=?, rfc=?, direccion=?, ciudad=?, dia_vencimiento=?, dias_gracia=?, tasa_recargo_bp=?, pct_reserva_bp=?, umbral_aprobacion_cents=?, pronto_pago_bp=?, pronto_pago_dia=? WHERE id=?`)
+        .run(b.nombre, b.razon_social, b.rfc, b.direccion, b.ciudad, b.dia_vencimiento, b.dias_gracia, b.tasa_recargo_bp, b.pct_reserva_bp, b.umbral_aprobacion_cents, b.pronto_pago_bp ?? 0, b.pronto_pago_dia ?? 0, ctx.cid);
       return ctx.cid;
     });
   }],
@@ -287,7 +291,8 @@ export const apiRoutes = [
     return escribir(ctx, 'cuotas_emitidas', 'emision', () => F.emitirCuotas(ctx.db, ctx.cid, b.periodo, ctx.user));
   }],
   ['POST', `${C}/cobranza/extraordinaria`, { perm: 'capturar' }, ctx => {
-    const b = v(ctx.body, { concepto: 'str|max120', total_cents: 'cents', metodo: 'enum|indiviso|igual', destino: 'enum|operacion|reserva', fecha: 'date', vencimiento: 'date', unidades: 'arr|opt' });
+    const b = v(ctx.body, { concepto: 'str|max120', total_cents: 'cents', metodo: 'enum|indiviso|igual', destino: 'enum|operacion|reserva|fondo', fondo_id: 'int|opt', fecha: 'date', vencimiento: 'date', unidades: 'arr|opt' });
+    if (b.destino === 'fondo' && !b.fondo_id) fail(400, 'Seleccione el fondo que recibirá la cuota.');
     return escribir(ctx, 'extraordinaria_emitida', 'emision', () => F.emitirExtraordinaria(ctx.db, ctx.cid, b, ctx.user));
   }],
   ['POST', `${C}/cobranza/cargo`, { perm: 'capturar' }, ctx => {
@@ -403,13 +408,13 @@ export const apiRoutes = [
     if (q(ctx, 'estado')) { where.push('e.estado = ?'); args.push(q(ctx, 'estado')); }
     if (q(ctx, 'desde')) { where.push('e.fecha >= ?'); args.push(qFecha(ctx, 'desde')); }
     if (q(ctx, 'hasta')) { where.push('e.fecha <= ?'); args.push(qFecha(ctx, 'hasta')); }
-    return ctx.db.prepare(`SELECT e.*, pr.nombre AS proveedor, k.codigo AS partida_codigo, k.nombre AS partida, uc.nombre AS capturo, ua.nombre AS aprobo, a.nombre AS comprobante_nombre,
+    return ctx.db.prepare(`SELECT e.*, pr.nombre AS proveedor, k.codigo AS partida_codigo, k.nombre AS partida, uc.nombre AS capturo, ua.nombre AS aprobo, a.nombre AS comprobante_nombre, (SELECT nombre FROM fondos f WHERE f.id = e.fondo_id) AS fondo_nombre,
       (SELECT COUNT(*) FROM banco_movs bm WHERE bm.conciliado_tipo = 'egreso' AND bm.conciliado_id = e.id) AS conciliado
       FROM egresos e LEFT JOIN proveedores pr ON pr.id = e.proveedor_id JOIN cuentas k ON k.id = e.cuenta_id LEFT JOIN usuarios uc ON uc.id = e.created_by LEFT JOIN usuarios ua ON ua.id = e.aprobado_por LEFT JOIN archivos a ON a.id = e.comprobante_id
       WHERE ${where.join(' AND ')} ORDER BY e.fecha DESC, e.id DESC LIMIT 1000`).all(...args);
   }],
   ['POST', `${C}/egresos`, { perm: 'capturar' }, ctx => {
-    const b = v(ctx.body, { proveedor_id: 'int|opt', cuenta_id: 'int|min1', fondo: 'enum|operacion|reserva', fecha: 'date', concepto: 'str|max200', subtotal_cents: 'cents|zero', iva_cents: 'cents|zero',
+    const b = v(ctx.body, { proveedor_id: 'int|opt', cuenta_id: 'int|min1', fondo: 'enum|operacion|reserva', fondo_id: 'int|opt', fecha: 'date', concepto: 'str|max200', subtotal_cents: 'cents|zero', iva_cents: 'cents|zero',
       retenciones_cents: 'cents|zero', factura_folio: 'str|opt|max40', cfdi_uuid: 'uuid|opt', comprobante_id: 'int|opt', idem_key: 'key' });
     return escribir(ctx, 'egreso_capturado', 'egreso', () => F.crearEgreso(ctx.db, ctx.cid, b, ctx.user));
   }],
@@ -437,7 +442,7 @@ export const apiRoutes = [
 
   // ===== Archivos =====
   ['POST', `${C}/archivos`, { limite: 8_000_000 }, ctx => {
-    if (!PERMS.capturar.includes(ctx.rol) && ctx.rol !== 'residente') fail(403, 'No tiene permiso para subir archivos.');
+    if (!PERMS.capturar.includes(ctx.rol) && !PERMS.comunicar.includes(ctx.rol) && ctx.rol !== 'residente') fail(403, 'No tiene permiso para subir archivos.');
     const b = v(ctx.body, { nombre: 'str|max160', base64: 'str|max7000000' });
     return tx(ctx.db, () => ({ id: guardarArchivo(ctx, b.nombre, b.base64) }));
   }],
@@ -446,7 +451,8 @@ export const apiRoutes = [
     if (ctx.rol === 'residente') {
       const mios = new Set(unidadesDeResidente(ctx).map(u => u.id));
       const ligado = ctx.db.prepare('SELECT unidad_id FROM pagos WHERE comprobante_id = ? AND condominio_id = ?').all(a.id, ctx.cid).some(p => mios.has(p.unidad_id));
-      if (!ligado && a.created_by !== ctx.user.id) fail(404, 'Archivo no encontrado');
+      const publicado = ctx.db.prepare("SELECT 1 FROM comunidad WHERE archivo_id = ? AND condominio_id = ? AND publico = 1 AND estado <> 'archivado'").get(a.id, ctx.cid);
+      if (!ligado && !publicado && a.created_by !== ctx.user.id) fail(404, 'Archivo no encontrado');
     } else exigir(ctx, 'ver');
     return { __file: { path: join(FILES_DIR, a.sha256), name: a.nombre, mime: a.mime } };
   }],
@@ -549,6 +555,46 @@ export const apiRoutes = [
     });
   }],
 
+  // ===== Fondos, adeudos recurrentes, descuentos =====
+  ['GET', `${C}/fondos`, { perm: 'ver' }, ctx => ctx.db.prepare('SELECT f.*, k.codigo FROM fondos f JOIN cuentas k ON k.id = f.cuenta_id WHERE f.condominio_id = ? ORDER BY f.nombre').all(ctx.cid)],
+  ['POST', `${C}/fondos`, { perm: 'config' }, ctx => {
+    const b = v(ctx.body, { nombre: 'str|max80', meta_cents: 'cents|opt', descripcion: 'str|opt|max300' });
+    return escribir(ctx, 'fondo_creado', 'fondo', () => F.crearFondo(ctx.db, ctx.cid, b, ctx.user));
+  }],
+  ['PUT', `${C}/fondos/:id`, { perm: 'config' }, ctx => {
+    const id = idParam(ctx);
+    ctx.db.prepare('SELECT 1 FROM fondos WHERE id = ? AND condominio_id = ?').get(id, ctx.cid) || fail(404, 'Fondo no encontrado');
+    const b = v(ctx.body, { meta_cents: 'cents|opt', descripcion: 'str|opt|max300', activo: 'bool' });
+    return escribir(ctx, 'fondo_actualizado', 'fondo', () => { ctx.db.prepare('UPDATE fondos SET meta_cents = ?, descripcion = ?, activo = ? WHERE id = ?').run(b.meta_cents, b.descripcion, b.activo ? 1 : 0, id); return id; });
+  }],
+  ['GET', `${C}/cargos-recurrentes`, { perm: 'ver' }, ctx => ctx.db.prepare(`SELECT r.*, u.clave, us.nombre AS autor FROM cargos_recurrentes r LEFT JOIN unidades u ON u.id = r.unidad_id LEFT JOIN usuarios us ON us.id = r.created_by
+    WHERE r.condominio_id = ? ORDER BY r.activo DESC, r.created_at DESC`).all(ctx.cid)],
+  ['POST', `${C}/cargos-recurrentes`, { perm: 'capturar' }, ctx => {
+    const b = v(ctx.body, { unidad_id: 'int|opt', tipo: 'enum|extraordinaria|otro|multa', concepto: 'str|max100', monto_cents: 'cents', desde: 'periodo', hasta: 'periodo|opt' });
+    return escribir(ctx, 'cargo_recurrente_creado', 'cargo_recurrente', () => F.crearCargoRecurrente(ctx.db, ctx.cid, b, ctx.user));
+  }],
+  ['POST', `${C}/cargos-recurrentes/:id/desactivar`, { perm: 'capturar' }, ctx => escribir(ctx, 'cargo_recurrente_desactivado', 'cargo_recurrente', () => {
+    const r = ctx.db.prepare('UPDATE cargos_recurrentes SET activo = 0 WHERE id = ? AND condominio_id = ? AND activo = 1').run(idParam(ctx), ctx.cid);
+    if (!r.changes) fail(404, 'Cargo recurrente activo no encontrado'); return idParam(ctx);
+  })],
+  ['GET', `${C}/descuentos`, { perm: 'ver' }, ctx => R.descuentos(ctx.db, ctx.cid, qFecha(ctx, 'desde', `${hoy().slice(0, 4)}-01-01`), qFecha(ctx, 'hasta', hoy()))],
+  ['POST', `${C}/descuentos/lote`, { perm: 'cancelar' }, ctx => {
+    const b = v(ctx.body, { periodo: 'periodo', pct_bp: 'int|min1|max10000', motivo: 'str|max160', unidades: 'arr|opt' });
+    return escribir(ctx, 'descuento_lote', 'cargo', () => {
+      const filtro = b.unidades?.length ? new Set(b.unidades.map(Number)) : null;
+      const cs = ctx.db.prepare("SELECT c.id, c.unidad_id, c.monto_cents FROM cargos c WHERE c.condominio_id = ? AND c.periodo = ? AND c.tipo = 'ordinaria' AND c.cancelado_at IS NULL").all(ctx.cid, b.periodo)
+        .filter(c => !filtro || filtro.has(c.unidad_id));
+      let n = 0, total = 0;
+      for (const c of cs) {
+        const saldo = F.cargosAbiertos(ctx.db, c.unidad_id).find(x => x.id === c.id)?.saldo_cents || 0;
+        const m = Math.min(saldo, Math.round(c.monto_cents * b.pct_bp / 10000));
+        if (m > 0) { F.bonificar(ctx.db, ctx.cid, c.id, m, b.motivo, ctx.user); n++; total += m; }
+      }
+      if (!n) fail(400, 'No hay cuotas ordinarias con saldo pendiente en ese periodo.');
+      return { id: null, cargos: n, total };
+    });
+  }],
+
   // ===== Importación desde Excel / CSV =====
   ['GET', `${C}/importar/catalogos`, { perm: 'ver' }, ctx => catalogosPlantilla(ctx.db, ctx.cid)],
   ['POST', `${C}/importar/:tipo`, { limite: 8_000_000 }, ctx => {
@@ -597,6 +643,9 @@ export const apiRoutes = [
   ['GET', `${C}/reportes/flujo`, { perm: 'ver' }, ctx => R.flujoEfectivo(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', `${hoy().slice(0, 4)}-01`), qPeriodo(ctx, 'hasta', periodoActual()))],
   ['GET', `${C}/reportes/fondo-reserva`, { perm: 'ver' }, ctx => R.fondoReserva(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', `${hoy().slice(0, 4)}-01`), qPeriodo(ctx, 'hasta', periodoActual()))],
   ['GET', `${C}/reportes/cobranza`, { perm: 'ver' }, ctx => R.cobranzaMensual(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', addMonths(periodoActual(), -11)), qPeriodo(ctx, 'hasta', periodoActual()))],
+  ['GET', `${C}/reportes/fondos`, { perm: 'ver' }, ctx => R.fondos(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', `${hoy().slice(0, 4)}-01`), qPeriodo(ctx, 'hasta', periodoActual()))],
+  ['GET', `${C}/reportes/cxp`, { perm: 'ver' }, ctx => R.cuentasPorPagar(ctx.db, ctx.cid, qFecha(ctx, 'corte', hoy()))],
+  ['GET', `${C}/reportes/liquidacion`, { perm: 'ver' }, ctx => R.liquidacionAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/anual`, { perm: 'ver' }, ctx => R.informeAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/integridad`, { perm: 'ver' }, ctx => R.verificarIntegridad(ctx.db, ctx.cid)],
 
@@ -700,6 +749,8 @@ export const apiRoutes = [
     return escribir(ctx, 'pago_reportado', 'pago', () => F.registrarPago(ctx.db, ctx.cid, { ...b, confirmar_duplicado: true }, ctx.user, { validar: false }));
   }],
 ];
+
+apiRoutes.push(...rutasComunidad({ C, PERMS, escribir, exigir, idParam, q, unidadesDeResidente }));
 
 function limiteUsuario(ctx, k, n = 10) { return rl(`${k}:${ctx.user.id}`, n, 60 * 60 * 1000); }
 

@@ -11,12 +11,12 @@ export async function render(el, ctx) {
   const t = await capi('/tablero');
   const head = html`<div class="title-row"><div><h1>Cobranza</h1><p class="sub">Recibos, comprobantes reportados por residentes, emisión mensual y convenios de pago.</p></div>
     <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarPagos">Importar desde Excel</button><button class="btn primary" data-action="pago">Registrar pago</button>` : ''}</div></div>
-    ${tabs([['pagos', 'Pagos'], ['validar', 'Por validar', t.pendientes.pagos_por_validar], ['emision', 'Emisión y recargos'], ['convenios', 'Convenios']], sub, ctx.base)}`;
+    ${tabs([['pagos', 'Pagos'], ['validar', 'Por validar', t.pendientes.pagos_por_validar], ['emision', 'Emisión y recargos'], ['recurrentes', 'Adeudos recurrentes'], ['descuentos', 'Descuentos'], ['convenios', 'Convenios']], sub, ctx.base)}`;
   const cuerpo = html`<div id="cob-body"></div>`;
   mount(el, html`${head}${cuerpo}`);
   const body = $('#cob-body', el);
   ctx.acciones({ pago: () => dialogoPago({ onOk: () => ctx.recargar() }), importarPagos: () => abrirImportacion('pagos', { onOk: () => ctx.recargar() }) });
-  await ({ pagos, validar, emision, convenios }[sub] || pagos)(body, ctx, q);
+  await ({ pagos, validar, emision, recurrentes, descuentos, convenios }[sub] || pagos)(body, ctx, q);
 }
 
 async function pagos(el, ctx, q) {
@@ -86,7 +86,7 @@ async function validar(el, ctx) {
 }
 
 async function emision(el, ctx) {
-  const [rows, c] = await Promise.all([capi('/emisiones'), capi('/config')]);
+  const [rows, c, fondos] = await Promise.all([capi('/emisiones'), capi('/config'), capi('/fondos')]);
   const p = periodoActual();
   const opP = [-1, 0, 1].map(i => addMonths(p, i));
   mount(el, html`<div class="grid top">
@@ -125,11 +125,11 @@ async function emision(el, ctx) {
         <label class="field"><span>Prorrateo</span><select name="metodo"><option value="indiviso">Por porcentaje de indiviso</option><option value="igual">Partes iguales</option></select></label>
         <label class="field"><span>Fecha de emisión</span><input name="fecha" type="date" value="${hoy()}" required></label>
         <label class="field"><span>Vencimiento</span><input name="vencimiento" type="date" value="${addMonths(p, 1)}-10" required></label>
-        <label class="field full"><span>Destino</span><select name="destino"><option value="operacion">Gasto de operación (ingreso del ejercicio)</option><option value="reserva">Fondo de reserva (patrimonio)</option></select></label>
+        <label class="field full"><span>Destino</span><select name="destino"><option value="operacion">Gasto de operación (ingreso del ejercicio)</option><option value="reserva">Fondo de reserva (patrimonio)</option>${fondos.filter(x => x.activo).map(x => html`<option value="fondo:${x.id}">${x.nombre} (fondo específico)</option>`)}</select></label>
         <p class="note full">El reparto se hace sin perder centavos: la suma de los cargos es exactamente el total. Se aplica a todas las unidades activas (${us.filter(u => u.activo).length}).</p></div>`,
       acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Emitir cuota extraordinaria', primary: true }],
       onSubmit: async f => {
-        const r = await capi('/cobranza/extraordinaria', { method: 'POST', body: { concepto: val(f, 'concepto'), total_cents: pesosDe(f, 'total'), metodo: f.metodo.value, destino: f.destino.value, fecha: val(f, 'fecha'), vencimiento: val(f, 'vencimiento') } });
+        const r = await capi('/cobranza/extraordinaria', { method: 'POST', body: { concepto: val(f, 'concepto'), total_cents: pesosDe(f, 'total'), metodo: f.metodo.value, destino: f.destino.value.split(':')[0], fondo_id: +f.destino.value.split(':')[1] || null, fecha: val(f, 'fecha'), vencimiento: val(f, 'vencimiento') } });
         invalidar(); toast(`${r.emitidos} cargos por ${pesos(r.total)}`); ctx.recargar();
       },
     }),
@@ -144,6 +144,74 @@ async function emision(el, ctx) {
         <label class="field"><span>Vencimiento</span><input name="vencimiento" type="date" value="${hoy()}"></label></div>`,
       acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Registrar cargo', primary: true }],
       onSubmit: async f => { await capi('/cobranza/cargo', { method: 'POST', body: { unidad_id: +f.unidad.value, tipo: f.tipo.value, concepto: val(f, 'concepto'), monto_cents: pesosDe(f, 'monto'), fecha: val(f, 'fecha'), vencimiento: val(f, 'vencimiento') || null } }); invalidar(); toast('Cargo registrado.'); ctx.recargar(); },
+    }),
+  });
+}
+
+// ---------- Adeudos recurrentes: se emiten cada mes junto con la cuota ordinaria ----------
+async function recurrentes(el, ctx) {
+  const [rows, us] = await Promise.all([capi('/cargos-recurrentes'), unidades()]);
+  const TIPO = { extraordinaria: 'Extraordinaria', otro: 'Otro concepto', multa: 'Multa' };
+  const vig = r => r.activo && (!r.hasta || r.hasta >= periodoActual());
+  mount(el, html`<div class="filters"><p class="lead small">Cargos fijos que se generan automáticamente al emitir las cuotas de cada mes: estacionamiento adicional, bodega, cuota de subsidio o una extraordinaria en mensualidades. Emitir dos veces el mismo mes no los duplica.</p>
+      <span class="spacer"></span>${puede('capturar') ? html`<button class="btn primary" data-action="nuevoRec">Nuevo adeudo recurrente</button>` : ''}</div>
+    <section class="panel flush"><header><h2>${rows.filter(vig).length} adeudos recurrentes vigentes</h2><span class="meta">Mensual por unidad: ${pesos(rows.filter(vig).reduce((a, r) => a + r.monto_cents * (r.unidad_id ? 1 : us.filter(u => u.activo).length), 0))}</span></header>
+    ${tabla([
+      { t: 'Concepto', k: r => html`<b>${r.concepto}</b><span class="sub-t">${TIPO[r.tipo]}</span>` },
+      { t: 'Unidad', k: r => r.unidad_id ? html`<a class="link" href="#/c/${S.cid}/unidades/${r.unidad_id}">${r.clave}</a>` : 'Todas las unidades activas' },
+      { t: 'Importe mensual', num: true, k: r => m(r.monto_cents) },
+      { t: 'Vigencia', k: r => `${mesNombre(r.desde)} – ${r.hasta ? mesNombre(r.hasta) : 'sin fin'}`, cls: 'hide-m' },
+      { t: 'Estado', k: r => pill(vig(r) ? ['Vigente', 'pos'] : ['Terminado', 'neutral']) },
+      { t: '', k: r => r.activo && puede('capturar') ? html`<button class="link neg" data-action="bajaRec" data-id="${r.id}">Desactivar</button>` : '' },
+    ], rows, { vacio: 'No hay adeudos recurrentes.' })}</section>`);
+  ctx.acciones({
+    nuevoRec: () => dialogo({
+      titulo: 'Nuevo adeudo recurrente', cuerpo: html`<div class="form-grid">
+        <label class="field full"><span>Concepto</span><input name="concepto" required maxlength="100" placeholder="Renta de cajón adicional"></label>
+        <label class="field full"><span>Unidad</span><select name="unidad"><option value="">Todas las unidades activas (mismo importe cada una)</option>${opcionesUnidad(us)}</select></label>
+        <label class="field"><span>Importe mensual</span><input name="monto" class="num-in" inputmode="decimal" required></label>
+        <label class="field"><span>Tipo</span><select name="tipo"><option value="otro">Otro concepto</option><option value="extraordinaria">Extraordinaria</option><option value="multa">Multa</option></select></label>
+        <label class="field"><span>Desde</span><input type="month" name="desde" value="${periodoActual()}" required></label>
+        <label class="field"><span>Hasta <span class="hint">· vacío = sin fin</span></span><input type="month" name="hasta"></label>
+        <p class="note full">Se cobra a partir de la próxima emisión de cuotas del periodo indicado.</p></div>`,
+      acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Guardar', primary: true }],
+      onSubmit: async f => { await capi('/cargos-recurrentes', { method: 'POST', body: { concepto: val(f, 'concepto'), unidad_id: f.unidad.value ? +f.unidad.value : null, monto_cents: pesosDe(f, 'monto'), tipo: f.tipo.value, desde: val(f, 'desde'), hasta: val(f, 'hasta') || null } }); toast('Adeudo recurrente guardado.'); ctx.recargar(); },
+    }),
+    bajaRec: async d => { if (!await confirmar('Desactivar adeudo recurrente', 'Dejará de generarse en las próximas emisiones; lo ya cobrado no cambia.', { label: 'Desactivar', danger: true })) return; await capi(`/cargos-recurrentes/${d.id}/desactivar`, { method: 'POST', body: {} }); toast('Desactivado.'); ctx.recargar(); },
+  });
+}
+
+// ---------- Descuentos: pronto pago automático, descuentos por lote y bonificaciones ----------
+async function descuentos(el, ctx, q) {
+  const desde = q.get('desde') || `${hoy().slice(0, 4)}-01-01`, hasta = q.get('hasta') || hoy();
+  const [d, c] = await Promise.all([capi(`/descuentos?desde=${desde}&hasta=${hasta}`), capi('/config')]);
+  mount(el, html`<div class="grid top">
+    <section class="panel c4"><header><h2>Pronto pago</h2>${pill(c.pronto_pago_bp ? ['Activo', 'pos'] : ['Inactivo', 'neutral'])}</header>
+      <p class="lead small">${c.pronto_pago_bp ? html`Quien liquida su cuota ordinaria completa a más tardar el día <b>${c.pronto_pago_dia}</b> del mes recibe <b>${(c.pronto_pago_bp / 100).toFixed(2)}%</b> de descuento, aplicado automáticamente al registrar o validar su pago.` : 'Configure un porcentaje y un día límite para descontar automáticamente a quien paga a tiempo.'}</p>
+      ${puede('config') ? html`<a class="link top-gap" href="#/c/${S.cid}/config">Cambiar en Configuración</a>` : ''}</section>
+    <section class="panel c4"><header><h2>Total descontado</h2></header><p class="kpi-value md">${pesos(d.total)}</p>
+      <ul class="rows top-gap">${d.por_tipo.map(x => html`<li><span class="t">${x.tipo}</span><span class="v">${pesos(x.monto)}</span></li>`)}</ul></section>
+    <section class="panel c4"><header><h2>Descuento por lote</h2></header><p class="lead small">Aplica un porcentaje a las cuotas ordinarias pendientes de un mes (p. ej. un acuerdo de asamblea). Queda como bonificación con su póliza.</p>
+      ${puede('cancelar') ? html`<button class="btn top-gap" data-action="lote">Aplicar descuento por lote</button>` : ''}</section>
+    <section class="panel flush c12"><header><h2>Movimientos</h2><span class="meta">Descuentos, condonaciones y bonificaciones registradas</span></header>
+      <form class="filters pad" data-filtros><label class="field"><span>Desde</span><input type="date" name="desde" value="${desde}"></label><label class="field"><span>Hasta</span><input type="date" name="hasta" value="${hasta}"></label><button class="btn">Filtrar</button></form>
+      ${tabla([{ t: 'Fecha', k: r => fecha(r.fecha), cls: 'nowrap' }, { t: 'Unidad', k: r => html`<a class="link" href="#/c/${S.cid}/unidades/${r.unidad_id}">${r.clave}</a>` },
+        { t: 'Cargo', k: r => r.concepto, cls: 'hide-m' }, { t: 'Motivo', k: r => html`${r.motivo || '—'}${r.revertida ? html` <span class="pill neutral">revertida</span>` : ''}` },
+        { t: 'Importe', num: true, k: r => m(r.monto_cents) }, { t: 'Registró', k: r => r.autor || 'Sistema', cls: 'hide-m' }], d.movimientos, { vacio: 'Sin descuentos en el rango.' })}</section></div>`);
+  $('[data-filtros]', el).addEventListener('submit', e => { e.preventDefault(); location.hash = `${ctx.base}/descuentos?desde=${e.target.desde.value}&hasta=${e.target.hasta.value}`; });
+  ctx.acciones({
+    lote: () => dialogo({
+      titulo: 'Descuento por lote', cuerpo: html`<div class="form-grid">
+        <label class="field"><span>Cuotas del mes</span><input type="month" name="periodo" value="${periodoActual()}" required></label>
+        <label class="field"><span>Descuento (%)</span><input name="pct" class="num-in" inputmode="decimal" required placeholder="10"></label>
+        <label class="field full"><span>Motivo (queda en la póliza y la bitácora)</span><input name="motivo" required maxlength="160" placeholder="Acuerdo de asamblea del 15 de marzo"></label>
+        <p class="note full">Se aplica a todas las unidades con la cuota ordinaria de ese mes pendiente; nunca excede el saldo de la cuota.</p></div>`,
+      acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Aplicar descuento', primary: true }],
+      onSubmit: async f => {
+        const p = parseFloat(val(f, 'pct').replace('%', '')); if (!(p > 0 && p <= 100)) throw new Error('Porcentaje inválido.');
+        const r = await capi('/descuentos/lote', { method: 'POST', body: { periodo: val(f, 'periodo'), pct_bp: Math.round(p * 100), motivo: val(f, 'motivo') } });
+        invalidar(); toast(`${r.cargos} cuotas con descuento por ${pesos(r.total)}`); ctx.recargar();
+      },
     }),
   });
 }

@@ -43,7 +43,7 @@ export async function dialogoPago({ unidad = null, onOk } = {}) {
       try {
         const r = await capi('/pagos', { method: 'POST', body });
         invalidar();
-        toast(r.repetido ? 'Ese pago ya estaba registrado; no se duplicó.' : `Pago aplicado · recibo R-${r.folio}${r.saldo_favor ? ` · ${pesos(r.saldo_favor)} a favor` : ''}`);
+        toast(r.repetido ? 'Ese pago ya estaba registrado; no se duplicó.' : `Pago aplicado · recibo R-${r.folio}${r.descuento ? ` · descuento por pronto pago ${pesos(r.descuento)}` : ''}${r.saldo_favor ? ` · ${pesos(r.saldo_favor)} a favor` : ''}`);
         refrescarContadores(); onOk?.(r);
       } catch (e) {
         if (e.code === 'POSIBLE_DUPLICADO') { confirmarDup = true; throw new Error(`${e.message} Si es un pago distinto, presione de nuevo «Registrar y aplicar».`); }

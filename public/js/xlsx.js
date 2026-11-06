@@ -152,7 +152,9 @@ export function escribirXlsx(hojas) {
   return zip(archivos);
 }
 
-export function guardarBlob(blob, nombre) {
+// Si la página corre dentro de un visor que entrega archivos por su cuenta (demo publicada), lo usa.
+export async function guardarBlob(blob, nombre) {
+  if (window.__guardarArchivo && await window.__guardarArchivo(blob, nombre)) return;
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
   document.body.appendChild(a); a.click(); a.remove();

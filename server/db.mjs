@@ -330,6 +330,71 @@ CREATE TABLE IF NOT EXISTS respaldos (
   motivo TEXT, verificado INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL
 );
 
+-- ===== Finanzas adicionales =====
+CREATE TABLE IF NOT EXISTS fondos (
+  id INTEGER PRIMARY KEY,
+  condominio_id INTEGER NOT NULL REFERENCES condominios(id),
+  nombre TEXT NOT NULL,
+  cuenta_id INTEGER NOT NULL UNIQUE REFERENCES cuentas(id),
+  meta_cents INTEGER CHECK (meta_cents IS NULL OR meta_cents >= 0),
+  descripcion TEXT,
+  activo INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER, created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cargos_recurrentes (
+  id INTEGER PRIMARY KEY,
+  condominio_id INTEGER NOT NULL REFERENCES condominios(id),
+  unidad_id INTEGER REFERENCES unidades(id),          -- NULL = todas las unidades activas
+  tipo TEXT NOT NULL CHECK (tipo IN ('extraordinaria','otro','multa')),
+  concepto TEXT NOT NULL,
+  monto_cents INTEGER NOT NULL CHECK (monto_cents > 0),
+  desde TEXT NOT NULL CHECK (desde GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+  hasta TEXT CHECK (hasta IS NULL OR hasta GLOB '[0-9][0-9][0-9][0-9]-[0-1][0-9]'),
+  activo INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER, created_at INTEGER NOT NULL
+);
+
+-- ===== Comunidad: avisos, calendario, documentos, teléfonos, cosas perdidas y encuestas =====
+CREATE TABLE IF NOT EXISTS comunidad (
+  id INTEGER PRIMARY KEY,
+  condominio_id INTEGER NOT NULL REFERENCES condominios(id),
+  tipo TEXT NOT NULL CHECK (tipo IN ('aviso','evento','documento','telefono','perdido')),
+  titulo TEXT NOT NULL,
+  cuerpo TEXT, categoria TEXT,
+  fecha TEXT, hora TEXT, lugar TEXT, telefono TEXT,
+  archivo_id INTEGER REFERENCES archivos(id),
+  fijado INTEGER NOT NULL DEFAULT 0,
+  estado TEXT NOT NULL DEFAULT 'vigente' CHECK (estado IN ('vigente','archivado','entregado')),
+  publico INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_comunidad ON comunidad(condominio_id, tipo, estado);
+
+CREATE TABLE IF NOT EXISTS encuestas (
+  id INTEGER PRIMARY KEY,
+  condominio_id INTEGER NOT NULL REFERENCES condominios(id),
+  pregunta TEXT NOT NULL, descripcion TEXT,
+  cierra TEXT NOT NULL,
+  ponderada INTEGER NOT NULL DEFAULT 0,                -- 1 = resultados por porcentaje de indiviso
+  estado TEXT NOT NULL DEFAULT 'abierta' CHECK (estado IN ('abierta','cerrada')),
+  created_by INTEGER, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS encuesta_opciones (
+  id INTEGER PRIMARY KEY,
+  encuesta_id INTEGER NOT NULL REFERENCES encuestas(id),
+  texto TEXT NOT NULL, orden INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS encuesta_votos (
+  encuesta_id INTEGER NOT NULL REFERENCES encuestas(id),
+  unidad_id INTEGER NOT NULL REFERENCES unidades(id),
+  opcion_id INTEGER NOT NULL REFERENCES encuesta_opciones(id),
+  usuario_id INTEGER, registrado_por INTEGER, created_at INTEGER NOT NULL,
+  PRIMARY KEY (encuesta_id, unidad_id)                 -- un voto por unidad
+);
+CREATE TRIGGER IF NOT EXISTS t_voto_no_upd BEFORE UPDATE ON encuesta_votos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: un voto emitido no se modifica'); END;
+CREATE TRIGGER IF NOT EXISTS t_voto_no_del BEFORE DELETE ON encuesta_votos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: un voto emitido no se elimina'); END;
+
 -- ===== Inmutabilidad: lo contabilizado no se edita ni se borra; se revierte. =====
 CREATE TRIGGER IF NOT EXISTS t_mov_no_upd BEFORE UPDATE ON movimientos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: los movimientos contables no se modifican'); END;
 CREATE TRIGGER IF NOT EXISTS t_mov_no_del BEFORE DELETE ON movimientos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: los movimientos contables no se eliminan'); END;
@@ -386,8 +451,22 @@ export function openDb(path = DB_PATH) {
   db.exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;
            PRAGMA secure_delete = ON; PRAGMA busy_timeout = 5000; PRAGMA trusted_schema = OFF;`);
   db.exec(SCHEMA);
+  migrar(db);
   if (fresh) { try { chmodSync(path, 0o600); } catch { /* sistemas sin permisos POSIX */ } }
   return db;
+}
+
+// Columnas agregadas después de la primera versión: se añaden a bases existentes sin perder datos.
+const COLUMNAS = [
+  ['condominios', 'pronto_pago_bp', 'INTEGER NOT NULL DEFAULT 0 CHECK (pronto_pago_bp BETWEEN 0 AND 5000)'],
+  ['condominios', 'pronto_pago_dia', 'INTEGER NOT NULL DEFAULT 0 CHECK (pronto_pago_dia BETWEEN 0 AND 28)'],
+  ['cargos', 'fondo_cuenta_id', 'INTEGER REFERENCES cuentas(id)'],    // fondo que recibe la aportación (NULL = fondo de reserva)
+  ['egresos', 'fondo_id', 'INTEGER REFERENCES fondos(id)'],           // fondo específico del que se paga (NULL = reserva)
+];
+function migrar(db) {
+  for (const [t, c, def] of COLUMNAS) {
+    if (!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
+  }
 }
 
 // Transacción con bloqueo de escritura inmediato: serializa folios y evita carreras.

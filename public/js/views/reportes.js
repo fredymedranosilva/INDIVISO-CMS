@@ -1,5 +1,5 @@
 // Reportes financieros e informe anual (liquidación del ejercicio para la asamblea).
-import { capi, html, raw, mount, $, pesos, fecha, mesCorto, mesNombre, periodoActual, hoy, tabla, m, cargando, tabs, imprimir, pct, LOGO } from '../ui.js';
+import { capi, html, raw, mount, $, pesos, fecha, mesCorto, mesNombre, periodoActual, hoy, tabla, m, cargando, tabs, imprimir, pct, LOGO, barra } from '../ui.js';
 
 const rango = (q, def) => ({ desde: q.get('desde') || def.desde, hasta: q.get('hasta') || def.hasta });
 const filtroMeses = (r, extra = '') => html`<form class="filters" data-f><label class="field"><span>Desde</span><input type="month" name="desde" value="${r.desde}"></label><label class="field"><span>Hasta</span><input type="month" name="hasta" value="${r.hasta}"></label>${raw(extra)}<button class="btn">Ver</button><span class="spacer"></span><button class="btn ghost" type="button" data-action="imprimir">Imprimir</button></form>`;
@@ -8,13 +8,13 @@ export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'resultados').split('?');
   const q = new URLSearchParams(qs || '');
   mount(el, html`<div class="title-row"><div><h1>Reportes</h1><p class="sub">Estados financieros calculados del libro contable. Cada reporte se puede imprimir o guardar en PDF.</p></div></div>
-    ${tabs([['resultados', 'Estado de resultados'], ['balance', 'Balance general'], ['flujo', 'Flujo de efectivo'], ['reserva', 'Fondo de reserva'], ['anual', 'Informe anual']], sub, ctx.base)}<div id="rp-body"></div>`);
+    ${tabs([['resultados', 'Estado de resultados'], ['balance', 'Balance general'], ['flujo', 'Flujo de efectivo'], ['fondos', 'Fondos'], ['liquidacion', 'Liquidación anual'], ['anual', 'Informe anual']], sub, ctx.base)}<div id="rp-body"></div>`);
   const body = $('#rp-body', el);
   cargando(body);
   const anio = hoy().slice(0, 4);
   const def = { desde: `${anio}-01`, hasta: periodoActual() };
   const c = await capi('/config');
-  const fns = { resultados, balance, flujo, reserva, anual };
+  const fns = { resultados, balance, flujo, reserva, fondos, liquidacion, anual };
   const doc = await (fns[sub] || resultados)(body, ctx, q, def, c);
   $('[data-f]', body)?.addEventListener('submit', e => { e.preventDefault(); const f = e.target; const p = new URLSearchParams(new FormData(f)); location.hash = `${ctx.base}/${sub}?${p}`; });
   ctx.acciones({ imprimir: () => imprimir(doc) });
@@ -82,6 +82,42 @@ async function reserva(el, ctx, q, def, c) {
     <h3 class="top-gap">Usos del fondo aprobados</h3>${tabla([{ t: 'Folio', k: x => `E-${x.folio}` }, { t: 'Fecha', k: x => fecha(x.fecha) }, { t: 'Concepto', k: x => html`${x.concepto}<span class="sub-t">${x.proveedor || ''}</span>` }, { t: 'Importe', num: true, k: x => m(x.total_cents) }], f.usos, { vacio: 'Sin usos del fondo en el periodo.' })}`;
   mount(el, html`${filtroMeses(r)}<section class="panel">${cuerpo}</section>`);
   return html`<article class="doc">${encabezado(c, 'Fondo de reserva', `De ${mesNombre(r.desde)} a ${mesNombre(r.hasta)}`)}${cuerpo}</article>`;
+}
+
+async function fondos(el, ctx, q, def, c) {
+  const r = rango(q, def);
+  const f = await capi(`/reportes/fondos?desde=${r.desde}&hasta=${r.hasta}`);
+  const cuerpo = html`${tabla([{ t: 'Fondo', k: x => html`<b>${x.nombre}</b><span class="sub-t">${x.descripcion || ''}</span>` }, { t: 'Saldo inicial', num: true, k: x => m(x.inicial) }, { t: 'Aportaciones', num: true, k: x => m(x.aportaciones) },
+      { t: 'Aplicaciones', num: true, k: x => m(x.aplicaciones) }, { t: 'Saldo', num: true, k: x => html`<b>${pesos(x.saldo)}</b>` },
+      { t: 'Meta', k: x => x.meta_cents ? html`<div class="hbar"><span>${pesos(x.meta_cents)}</span><span class="num">${pct(x.avance, 0)}</span>${barra(x.avance)}</div>` : html`<span class="faint">—</span>` }],
+      f.fondos, { pie: ['Total', '', '', '', pesos(f.total), ''] })}
+    ${f.fondos.filter(x => x.usos.length).map(x => html`<h3 class="top-gap">Usos de ${x.nombre}</h3>${tabla([{ t: 'Folio', k: e => `E-${e.folio}` }, { t: 'Fecha', k: e => fecha(e.fecha) }, { t: 'Concepto', k: e => html`${e.concepto}<span class="sub-t">${e.proveedor || ''}</span>` }, { t: 'Importe', num: true, k: e => m(e.total_cents) }], x.usos)}`)}`;
+  mount(el, html`${filtroMeses(r)}<section class="panel">${cuerpo}<p class="small muted top-gap">Los fondos son patrimonio del condominio: no son ingreso del ejercicio. Cree fondos nuevos en Configuración.</p></section>`);
+  return html`<article class="doc">${encabezado(c, 'Fondos', `De ${mesNombre(r.desde)} a ${mesNombre(r.hasta)}`)}${cuerpo}</article>`;
+}
+
+// Liquidación anual («sábana»): cada unidad, mes por mes, lo emitido contra lo pagado.
+async function liquidacion(el, ctx, q, def, c) {
+  const ej = +(q.get('ejercicio') || hoy().slice(0, 4));
+  const l = await capi(`/reportes/liquidacion?ejercicio=${ej}`);
+  const celda = x => !x ? html`<span class="faint">—</span>` : html`<span class="st ${x.estado}" title="Emitido ${pesos(x.emitido)} · pagado ${pesos(x.pagado)}${x.bonificado ? ` · bonificado ${pesos(x.bonificado)}` : ''}">${x.estado === 'pagado' ? '✓' : pesos(x.saldo).replace('.00', '')}</span>`;
+  const t = html`<div class="table-wrap"><table class="tbl dense sabana"><thead><tr><th>Unidad</th><th class="r">Adeudo previo</th>${l.periodos.map(p => html`<th class="r">${mesCorto(p)}</th>`)}<th class="r">Emitido</th><th class="r">Pagado</th><th class="r">Saldo ${ej}</th></tr></thead>
+    <tbody>${l.unidades.map(u => html`<tr><td><b>${u.clave}</b><span class="sub-t">${u.propietario || ''}</span></td><td class="r num ${u.adeudo_previo ? 'neg-t' : 'zero'}">${pesos(u.adeudo_previo)}</td>${l.periodos.map(p => html`<td class="mes">${celda(u.meses[p])}</td>`)}
+      <td class="r num">${pesos(u.emitido)}</td><td class="r num">${pesos(u.pagado)}</td><td class="r num ${u.saldo > 0 ? 'neg-t' : ''}"><b>${pesos(u.saldo)}</b></td></tr>`)}</tbody>
+    <tfoot><tr><td>Total</td><td class="r num">${pesos(l.totales.adeudo_previo)}</td>${l.periodos.map(p => html`<td class="r num small">${l.totales.meses[p].emitido ? pct(l.totales.meses[p].pagado / l.totales.meses[p].emitido, 0) : ''}</td>`)}
+      <td class="r num">${pesos(l.totales.emitido)}</td><td class="r num">${pesos(l.totales.pagado)}</td><td class="r num">${pesos(l.totales.saldo)}</td></tr></tfoot></table></div>`;
+  const anios = [ej, ej - 1, ej - 2].filter(x => x <= +hoy().slice(0, 4));
+  mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio">${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label><button class="btn">Ver</button><span class="spacer"></span>
+      <button class="btn ghost" type="button" data-action="excel">Exportar a Excel</button><button class="btn ghost" type="button" data-action="imprimir">Imprimir</button></form>
+    <section class="panel"><div class="leyenda"><span><span class="st pagado">✓</span> pagado</span><span><span class="st parcial">$</span> pago parcial (saldo)</span><span><span class="st pendiente">$</span> sin pago (saldo)</span><span>La fila de totales muestra el % cobrado de cada mes.</span></div>
+      <div class="top-gap">${t}</div></section>`);
+  ctx.acciones({ excel: async () => {
+    const { escribirXlsx, guardarBlob } = await import('../xlsx.js');
+    const filas = [['Unidad', 'Propietario', 'Adeudo previo', ...l.periodos.map(p => `${mesCorto(p)} emitido`), ...l.periodos.map(p => `${mesCorto(p)} pagado`), 'Emitido', 'Pagado', 'Bonificado', 'Saldo'],
+      ...l.unidades.map(u => [u.clave, u.propietario || '', u.adeudo_previo / 100, ...l.periodos.map(p => (u.meses[p]?.emitido || 0) / 100), ...l.periodos.map(p => (u.meses[p]?.pagado || 0) / 100), u.emitido / 100, u.pagado / 100, u.bonificado / 100, u.saldo / 100])];
+    await guardarBlob(escribirXlsx([{ nombre: `Liquidación ${ej}`, filas }]), `liquidacion-anual-${ej}.xlsx`);
+  } });
+  return html`<article class="doc wide-doc">${encabezado(c, `Liquidación anual ${ej}`, 'Emitido contra pagado por unidad')}${t}</article>`;
 }
 
 async function anual(el, ctx, q, def, c) {

@@ -71,7 +71,9 @@ export const capi = (path, opts) => api(`/api/c/${S.cid}${path}`, opts);
 export async function descargar(path, nombre) {
   const r = await fetch(path, { credentials: 'same-origin' });
   if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'No se pudo descargar.'); }
-  const url = URL.createObjectURL(await r.blob());
+  const blob = await r.blob();
+  if (window.__guardarArchivo && await window.__guardarArchivo(blob, nombre)) return;
+  const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
@@ -86,7 +88,7 @@ export const leerArchivo = file => new Promise((ok, ko) => {
 
 export const puede = perm => ({
   ver: ['admin', 'contador', 'comite'], capturar: ['admin', 'contador'], aprobar: ['admin', 'comite'],
-  cancelar: ['admin'], cerrar: ['admin'], config: ['admin'], usuarios: ['admin'], auditoria: ['admin', 'comite'],
+  cancelar: ['admin'], cerrar: ['admin'], config: ['admin'], usuarios: ['admin'], auditoria: ['admin', 'comite'], comunicar: ['admin', 'comite'],
 }[perm] || []).includes(S.rol);
 
 // ---------- Avisos ----------
@@ -166,6 +168,7 @@ export const ICON = {
   config: I('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 0 1-4 0v-.1a1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H3a2 2 0 0 1 0-4h.1a1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 2.7-1.1V3a2 2 0 0 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 0 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.3z"/>'),
   consolidado: I('<path d="M3 21h18M5 21V9l4-3v15M10 21V4l5 3v14M15 21v-9l4 2v7"/>'),
   menu: I('<path d="M4 7h16M4 12h16M4 17h16"/>'),
+  comunidad: I('<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/>'),
   salir: I('<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>'),
   imprimir: I('<path d="M7 9V3h10v6M7 17H4v-7h16v7h-3M7 14h10v7H7z"/>'),
   descargar: I('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),

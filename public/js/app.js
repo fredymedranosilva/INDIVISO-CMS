@@ -16,6 +16,7 @@ const VISTAS = {
   seguridad: () => import('./views/seguridad.js'),
   config: () => import('./views/config.js'),
   mi: () => import('./views/residente.js'),
+  comunidad: () => import('./views/comunidad.js'),
   consolidado: () => import('./views/consolidado.js'),
 };
 
@@ -23,7 +24,7 @@ const NAV = [
   [null, [['tablero', 'Tablero', 'tablero', 'ver']]],
   ['Cobranza', [['cobranza', 'Cobranza', 'cobranza', 'ver', 'pagos'], ['morosidad', 'Morosidad', 'morosidad', 'ver'], ['estados', 'Estados de cuenta', 'estados', 'ver']]],
   ['Gasto y bancos', [['egresos', 'Egresos', 'egresos', 'ver', 'egresos'], ['bancos', 'Bancos y conciliación', 'bancos', 'ver', 'bancos']]],
-  ['Padrón', [['unidades', 'Unidades y residentes', 'unidades', 'ver']]],
+  ['Padrón', [['unidades', 'Unidades y residentes', 'unidades', 'ver'], ['comunidad', 'Comunidad', 'comunidad', 'ver']]],
   ['Finanzas', [['presupuesto', 'Presupuesto', 'presupuesto', 'ver'], ['contabilidad', 'Contabilidad', 'contabilidad', 'ver'], ['reportes', 'Reportes', 'reportes', 'ver'], ['cierres', 'Cierres', 'cierres', 'ver']]],
   ['Administración', [['seguridad', 'Seguridad', 'seguridad', 'ver'], ['config', 'Configuración', 'config', 'ver']]],
 ];
@@ -101,7 +102,7 @@ function shell() {
   const c = S.condos.find(x => x.id === S.cid);
   const ini = S.me.nombre.split(/\s+/).filter(w => /^\p{Lu}/u.test(w)).slice(0, 2).map(w => w[0]).join('') || S.me.nombre[0];
   const navItems = S.rol === 'residente'
-    ? html`<a class="nav-item" href="#/c/${S.cid}/mi" data-nav="mi">${raw(ICON.estados)}Mi estado de cuenta</a>`
+    ? html`<a class="nav-item" href="#/c/${S.cid}/mi" data-nav="mi">${raw(ICON.estados)}<span>Mi estado de cuenta</span></a><a class="nav-item" href="#/c/${S.cid}/comunidad" data-nav="comunidad">${raw(ICON.comunidad)}<span>Comunidad</span></a>`
     : NAV.map(([g, items]) => html`${g ? html`<p class="group-label">${g}</p>` : ''}${items.filter(i => puede(i[3])).map(([k, l, ic, , cnt]) =>
         html`<a class="nav-item" href="#/c/${S.cid}/${k}" data-nav="${k}">${raw(ICON[ic])}<span>${l}</span>${cnt ? html`<span class="count" data-count="${cnt}" hidden></span>` : ''}</a>`)}`);
   const multi = S.condos.filter(x => x.rol !== 'residente').length > 1;
@@ -134,7 +135,7 @@ export function tintar(el) { if (!el) return; const h = (+el.dataset.tint * 67) 
 function cambiarCondo(id, vista = 'tablero') {
   const c = S.condos.find(x => x.id === id); if (!c) return;
   S.cid = id; S.rol = c.rol; store.set('idv-condo', String(id));
-  const v = c.rol === 'residente' ? 'mi' : (VISTAS[vista] && vista !== 'mi' ? vista : 'tablero');
+  const v = c.rol === 'residente' ? (vista === 'comunidad' ? 'comunidad' : 'mi') : (VISTAS[vista] && vista !== 'mi' ? vista : 'tablero');
   shell();
   location.hash = `#/c/${id}/${v}`;
   enrutar();
@@ -161,7 +162,7 @@ async function enrutar() {
     if (id !== S.cid) { const c = S.condos.find(x => x.id === id); if (!c) { location.hash = `#/c/${S.cid}/tablero`; return; } S.cid = id; S.rol = c.rol; store.set('idv-condo', String(id)); shell(); }
     vista = partes[2] || 'tablero'; params = partes.slice(3);
   } else { location.hash = `#/c/${S.cid}/${S.rol === 'residente' ? 'mi' : 'tablero'}`; return; }
-  if (S.rol === 'residente' && vista !== 'mi') { location.hash = `#/c/${S.cid}/mi`; return; }
+  if (S.rol === 'residente' && vista !== 'mi' && vista !== 'comunidad') { location.hash = `#/c/${S.cid}/mi`; return; }
   if (!VISTAS[vista]) { vista = 'tablero'; }
   for (const a of $$('[data-nav]')) { if (a.dataset.nav === vista) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); }
   const el = $('#view');

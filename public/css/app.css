@@ -264,7 +264,34 @@ a.row-link { display: flex; color: inherit; border-radius: 4px; transition: back
 .hbar .meter { grid-column: 1 / -1; }
 
 /* ---------- documento imprimible (estado de cuenta, recibo, informe) ---------- */
-.doc { background: var(--surface); color: #13201b; border: 1px solid var(--border); border-radius: var(--radius-card); padding: 40px 44px; max-width: 900px; }
+/* Los documentos (estados de cuenta, recibos, constancias, informes) son siempre papel claro, también en tema oscuro. */
+.doc {
+  --ground: #f4f4f1;        /* papel: un paso fuera del blanco, croma bajo */
+  --surface: #ffffff;
+  --raised: #f1f1ed;        /* pozos internos, filas al pasar el cursor */
+  --active: #e7e7e2;        /* elemento activo de la navegación */
+  --border: #e4e4de;
+  --rule: #efefea;
+  --control: #cfcfc7;
+  --text: #13201b;          /* tinta verde-negra */
+  --muted: #59625e;
+  --faint: #6b726e;
+  --accent: #1d6b52;        /* verde tinta: el dato principal */
+  --accent-soft: #e3efe9;
+  --brass: #a17a35;         /* la marca, nunca en datos */
+  --primary: #14241f;
+  --primary-ink: #ffffff;
+  --positive: #1f7a4d; --negative: #b4232a; --warning: #8a5a00;
+  --pill-positive-bg: #e1f3e8; --pill-positive-ink: #0f4a2c;
+  --pill-negative-bg: #fbe9e7; --pill-negative-ink: #8a1c22;
+  --pill-warning-bg: #fbf1dc; --pill-warning-ink: #6e4700;
+  --pill-neutral-bg: #ececE7; --pill-neutral-ink: #3b423f;
+  --f-cur: #ffffff; --f-pend: #ffffff; --f-d30: #f7d9d5; --f-d60: #e9a59d; --f-d90: #b4232a; --f-favor: #d4e8de; --f-pagado: #e9ebe7;
+  --chart-1: var(--accent); --chart-2: #979d98; --chart-muted: #c9ccc6; --chart-mark: var(--text); --chart-span: 0.06;
+  --grid: #ebebe5; --axis-ink: var(--muted); --ink: var(--text);
+  color-scheme: light;
+}
+.doc { background: #ffffff; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 40px 44px; max-width: 900px; }
 .doc-head { display: flex; justify-content: space-between; gap: 24px; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 2px solid #13201b; }
 .doc-head h2 { font: 600 24px/1.15 var(--serif); letter-spacing: -0.02em; }
 .doc-head .org { font-size: 12.5px; color: #59625e; line-height: 1.5; }
@@ -394,3 +421,24 @@ a.row-link { display: flex; color: inherit; border-radius: 4px; transition: back
 .imp-resumen b { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .imp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .dlg-body h3 { font-size: var(--fs-body); font-weight: 600; }
+
+/* Comunidad */
+.avisos { display: grid; gap: var(--gap); }
+.avisos > .panel + .panel { margin-top: 0; }
+.aviso.fijado { border-left: 3px solid var(--brass); }
+.aviso header h2, .encuesta header h2 { margin-bottom: 2px; }
+.texto { white-space: pre-wrap; line-height: 1.55; }
+.resultados { list-style: none; margin: 12px 0 8px; padding: 0; display: grid; gap: 12px; }
+.votar { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--rule); justify-items: start; }
+.votar fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; }
+/* Liquidación anual */
+.sabana td.mes { text-align: center; font-size: 12px; padding-left: 4px; padding-right: 4px; }
+.st { display: inline-block; min-width: 54px; padding: 2px 4px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.st.pagado { background: var(--pill-positive-bg); color: var(--pill-positive-ink); }
+.st.parcial { background: var(--pill-warning-bg); color: var(--pill-warning-ink); }
+.st.pendiente { background: var(--pill-negative-bg); color: var(--pill-negative-ink); }
+.sabana td:first-child { white-space: nowrap; max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.leyenda .st { min-width: 22px; text-align: center; }
+.leyenda { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--fs-small); color: var(--muted); }
+.filters.pad { padding: 14px var(--card-pad) 0; margin-bottom: 6px; }
+.grid + .grid { margin-top: var(--gap); }

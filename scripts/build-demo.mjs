@@ -48,6 +48,8 @@ for (const c of me.condominios) {
   for (const r of ['proveedores', 'emisiones', 'config', 'convenios', 'cuentas', 'presupuestos', 'periodos', 'integridad', 'usuarios', 'personas']) await g(`${b}/${r}`);
   await g(`${b}/auditoria?limit=200`);
   await g(`${b}/importar/catalogos`); // plantillas de Excel descargables también en la demo
+  for (const r of ['fondos', 'cargos-recurrentes', 'encuestas', 'reportes/cxp', `reportes/liquidacion?ejercicio=${Y}`, `reportes/fondos?desde=${Y}-01&hasta=${P}`, `descuentos?desde=${Y}-01-01&hasta=${H}`, 'egresos?estado=aprobado']) await g(`${b}/${r}`);
+  for (const t of ['aviso', 'evento', 'documento', 'telefono', 'perdido']) await g(`${b}/comunidad?tipo=${t}`);
   const bancos = await g(`${b}/bancos`);
   for (const k of bancos) {
     await g(`${b}/bancos/${k.id}/movimientos?estado=pendientes`);
@@ -102,10 +104,21 @@ writeFileSync(join(OUT, 'demo-shim.js'), `// Demostración estática: sirve las 
     if (path === '/api/auth/logout') return json({ ok: true });
     return json({ error: MSG, code: 'DEMO' }, 403);
   };
+  // Publicada en claude.ai la página no puede descargar por sí misma: entrega el archivo con la capacidad «downloads».
+  let dl = null;
+  window.__guardarArchivo = async (blob, nombre) => {
+    if (!window.claude || typeof window.claude.use !== 'function') return false;
+    dl = dl || window.claude.use('downloads');
+    const d = await dl;
+    if (!d) return false;
+    try { await d.save({ filename: nombre, data: blob }); }
+    catch (e) { if (e && e.code === 'declined') return true; throw new Error('No se pudo descargar el archivo (' + ((e && e.code) || 'error') + ').'); }
+    return true;
+  };
   addEventListener('DOMContentLoaded', () => {
     const b = document.createElement('div');
     b.textContent = 'Demostración · solo lectura · datos ficticios';
-    b.setAttribute('style', 'position:fixed;left:12px;bottom:12px;z-index:60;padding:6px 10px;border-radius:6px;background:#14241f;color:#f4f4f1;font:500 12px system-ui;opacity:.92;pointer-events:none');
+    b.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:60;padding:6px 10px;border-radius:6px;background:#14241f;color:#f4f4f1;font:500 12px system-ui;opacity:.92;pointer-events:none';
     document.body.appendChild(b);
   });
 })();
