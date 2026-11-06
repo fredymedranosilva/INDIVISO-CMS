@@ -169,6 +169,8 @@ export const ICON = {
   consolidado: I('<path d="M3 21h18M5 21V9l4-3v15M10 21V4l5 3v14M15 21v-9l4 2v7"/>'),
   menu: I('<path d="M4 7h16M4 12h16M4 17h16"/>'),
   comunidad: I('<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/>'),
+  ingresos: I('<path d="M4 20h16M7 16V9M12 16V5M17 16v-4"/><path d="m9.5 7.5 2.5-2.5 2.5 2.5"/>'),
+  pdf: I('<path d="M6 3h9l3 3v15H6z"/><path d="M9 13h1.5a1.5 1.5 0 0 0 0-3H9v6M14 10v6"/>'),
   salir: I('<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>'),
   imprimir: I('<path d="M7 9V3h10v6M7 17H4v-7h16v7h-3M7 14h10v7H7z"/>'),
   descargar: I('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
@@ -215,4 +217,52 @@ export function imprimir(doc) {
   const fin = () => { document.body.classList.remove('printing'); root.innerHTML = ''; window.removeEventListener('afterprint', fin); };
   window.addEventListener('afterprint', fin);
   setTimeout(() => window.print(), 60);
+}
+
+// ---------- Periodo de consulta: mes y año ----------
+export const MESES_L = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const finMes = p => { const [y, mm] = p.split('-').map(Number); return `${p}-${pad(new Date(Date.UTC(y, mm, 0)).getUTCDate())}`; };
+// Lee ?anio=&mes= (mes 0 = todo el año). Devuelve fechas y periodos, sin pasar de hoy.
+export function leerPeriodo(q, { mes: defMes } = {}) {
+  const anio = +(q.get('anio') || hoy().slice(0, 4));
+  const mes = q.has('mes') ? +q.get('mes') : defMes ?? +hoy().slice(5, 7);
+  const desdeP = mes ? `${anio}-${pad(mes)}` : `${anio}-01`;
+  let hastaP = mes ? desdeP : `${anio}-12`;
+  if (hastaP > periodoActual() && desdeP <= periodoActual()) hastaP = periodoActual();
+  let hasta = finMes(hastaP); if (hasta > hoy()) hasta = hoy();
+  return { anio, mes, desdeP, hastaP, desde: `${desdeP}-01`, hasta, texto: mes ? `${MESES_L[mes - 1]} ${anio}` : `Año ${anio}`, qs: `anio=${anio}&mes=${mes}` };
+}
+export function selectorPeriodo(p, { todo = true } = {}) {
+  const act = +hoy().slice(0, 4), anios = [];
+  for (let y = act; y >= act - 5; y--) anios.push(y);
+  if (!anios.includes(p.anio)) anios.push(p.anio);
+  return html`<label class="field"><span>Mes</span><select name="mes" data-auto>${todo ? html`<option value="0" ${p.mes === 0 ? raw('selected') : ''}>Todo el año</option>` : ''}${MESES_L.map((n, i) => html`<option value="${i + 1}" ${p.mes === i + 1 ? raw('selected') : ''}>${n}</option>`)}</select></label>
+    <label class="field"><span>Año</span><select name="anio" data-auto>${anios.map(y => html`<option ${y === p.anio ? raw('selected') : ''}>${y}</option>`)}</select></label>`;
+}
+// Formulario de filtros que navega al cambiar un selector marcado con data-auto.
+export function filtrosAuto(form, ir) {
+  if (!form) return;
+  const go = () => ir(new URLSearchParams(new FormData(form)));
+  form.addEventListener('submit', e => { e.preventDefault(); go(); });
+  for (const s of form.querySelectorAll('[data-auto]')) s.addEventListener('change', go);
+}
+
+// ---------- Dona en SVG (sin estilos en línea: colores por clase) ----------
+export function dona(items, { centro = '', sub = '', formato = pesos } = {}) {
+  const datos = items.filter(i => i.valor > 0);
+  const total = datos.reduce((a, d) => a + d.valor, 0);
+  if (!total) return html`<p class="empty-chart">Sin movimientos en el periodo.</p>`;
+  const R = 46, r = 29, cx = 50, cy = 50;
+  let a = 0;
+  const pt = (rad, ang) => `${(cx + rad * Math.sin(ang)).toFixed(2)} ${(cy - rad * Math.cos(ang)).toFixed(2)}`;
+  const arcos = datos.map((d, i) => {
+    const b = a + 2 * Math.PI * d.valor / total, g = (b - a) > Math.PI ? 1 : 0;
+    const path = datos.length === 1 ? `M${pt(R, 0)} A${R} ${R} 0 1 1 ${pt(R, Math.PI * 1.9999)} L${pt(r, Math.PI * 1.9999)} A${r} ${r} 0 1 0 ${pt(r, 0)} Z`
+      : `M${pt(R, a)} A${R} ${R} 0 ${g} 1 ${pt(R, b)} L${pt(r, b)} A${r} ${r} 0 ${g} 0 ${pt(r, a)} Z`;
+    a = b;
+    return html`<path d="${path}" class="cat${d.cat ?? i % 10}"><title>${d.label}: ${formato(d.valor)} (${(d.valor / total * 100).toFixed(1)}%)</title></path>`;
+  });
+  return html`<div class="dona"><svg viewBox="0 0 100 100" role="img" aria-label="${datos.map(d => `${d.label} ${(d.valor / total * 100).toFixed(1)}%`).join(', ')}">${arcos}
+      <text x="50" y="49" class="dona-total">${centro || formato(total)}</text><text x="50" y="60" class="dona-sub">${sub}</text></svg>
+    <ul class="dona-ley">${datos.map((d, i) => html`<li><span class="sw cat${d.cat ?? i % 10}"></span><span class="t">${d.label}<small>${(d.valor / total * 100).toFixed(1)}%</small></span><span class="v num">${formato(d.valor)}</span></li>`)}</ul></div>`;
 }

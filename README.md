@@ -22,7 +22,8 @@ Usuarios de prueba y contraseñas: `data/credenciales-demo.txt`.
 
 ## Importar desde Excel
 Pagos, egresos, proveedores, directorio (unidades y residentes), saldos iniciales y presupuesto se cargan desde **.xlsx**, **.csv** o celdas pegadas de Excel (botón «Importar desde Excel» en cada sección).
-- Cada sección ofrece una **plantilla .xlsx** con hojas de catálogos (unidades, cuentas, partidas, formas de pago). El directorio y el presupuesto se exportan y se vuelven a importar ya editados.
+- Cada sección ofrece una **plantilla .xlsx** con hojas de catálogos (unidades, cuentas, partidas, formas de pago) y **3 filas de ejemplo en amarillo** («EJEMPLO · borre esta fila») que muestran cómo capturar y nunca se importan. El directorio y el presupuesto se exportan y se vuelven a importar ya editados.
+- La plantilla de **egresos** usa las mismas columnas que Vivook: Concepto, Proveedor, Importe, Fecha, Forma de pago, Cuenta bancaria, Referencia, Clasificación presupuestal, Fondo y Comentarios.
 - Antes de guardar se muestra una **vista previa validada fila por fila** por el mismo motor que la captura manual; las filas con error no se importan y se pueden descargar para corregirlas.
 - Reimportar el mismo archivo **no duplica** pagos ni egresos. Acepta encabezados y formatos de otros sistemas (p. ej. Vivook): fechas DD/MM/AAAA, claves SAT de forma de pago, «Clasificación presupuestal», saldos «(A favor)».
 - **Saldos iniciales** (migración): adeudos y saldos a favor por unidad contra «Remanente de ejercicios anteriores», no como ingreso del año.
@@ -34,6 +35,13 @@ Pagos, egresos, proveedores, directorio (unidades y residentes), saldos iniciale
 - **Cuentas por pagar** (*Egresos*): saldo con proveedores por antigüedad (0-30, 31-60, 61-90, +90 días).
 - **Liquidación anual** (*Reportes*): cada unidad, mes por mes, emitido contra pagado; exportable a Excel.
 - **Comunidad**: avisos, calendario, documentos, encuestas (un voto por unidad, opcionalmente ponderado por indiviso), teléfonos útiles y cosas perdidas; los residentes lo ven en su portal.
+
+## Reportes en PDF y periodos
+- Todo se consulta por **mes y año** (o «Todo el año»): ingresos, egresos, pagos, bancos, cuentas por cobrar, morosidad y estados financieros.
+- **Ingresos** (menú *Cobranza*): todo lo cobrado mes con mes, clasificado en ordinarios, extraordinarios, otros y pendientes de aplicar (saldo a favor), con detalle por clasificación y concepto.
+- **Reportes en PDF con gráficas** (*Reportes*): ingresos, egresos, cuentas por cobrar, saldos bancarios, conciliación bancaria y morosidad. Se generan en el navegador, sin dependencias.
+- **Estados de cuenta**: anual, mensual, histórico o personalizado; cada cuota con su estatus (pagada, pago parcial, no pagada), recibo PDF de cada pago, todos los recibos juntos, aviso de cobro y estado de cuenta en PDF, individual o de todas las unidades.
+- **Recargos** (Configuración): porcentaje sobre cada cuota vencida, porcentaje sobre el saldo vencido o monto fijo por cuota; además, recargo manual a una cuota desde el estado de cuenta.
 
 ## Garantías de integridad
 Importes en centavos enteros · partida doble validada · triggers que impiden editar o borrar lo contabilizado (solo contrapólizas) · meses cerrados bloqueados en la base · claves de idempotencia y llaves únicas contra duplicados (cuotas, pagos, clave de rastreo, UUID CFDI, movimientos bancarios) · quien captura un egreso no lo aprueba · bitácora encadenada por hash · respaldos AES-256-GCM verificados · sesiones de servidor, CSRF, 2FA TOTP, bloqueo por intentos, CSP estricta.

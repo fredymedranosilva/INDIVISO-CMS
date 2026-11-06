@@ -267,24 +267,46 @@ export function cargoIndividual(db, cid, d, user) {
   }], { concepto: d.concepto, fecha: d.fecha, origen: 'cargo' }, user);
 }
 
-// Recargos: tasa mensual sobre cuotas vencidas (nunca sobre recargos: sin anatocismo).
+// Recargos del mes sobre cuotas vencidas (nunca sobre recargos: sin anatocismo). Tres modos:
+//   saldo: % sobre el saldo vencido · cuota: % sobre el importe de cada cuota vencida · fijo: monto por cada cuota vencida.
 export function calcularRecargos(db, cid, periodo, user) {
   const c = condo(db, cid);
-  if (!c.tasa_recargo_bp) fail(400, 'La tasa de recargos está en 0%.');
+  const modo = c.recargo_modo || 'saldo';
+  if (modo === 'fijo' ? !c.recargo_fijo_cents : !c.tasa_recargo_bp) fail(400, modo === 'fijo' ? 'El recargo fijo está en $0.' : 'La tasa de recargos está en 0%.');
   const corte = `${periodo}-01`;
   const conv = new Set(db.prepare("SELECT unidad_id FROM convenios WHERE condominio_id = ? AND estado = 'vigente' AND suspende_recargos = 1").all(cid).map(r => r.unidad_id));
-  const rows = db.prepare(`SELECT c.unidad_id, c.vencimiento, ${SALDO_CARGO} AS saldo FROM cargos c
+  const rows = db.prepare(`SELECT c.unidad_id, c.vencimiento, c.monto_cents, ${SALDO_CARGO} AS saldo FROM cargos c
     WHERE c.condominio_id = ? AND c.cancelado_at IS NULL AND c.tipo IN ('ordinaria','extraordinaria')`).all(cid);
-  const vencido = new Map();
+  const porUnidad = new Map();
   for (const r of rows) {
     if (r.saldo <= 0 || addDays(r.vencimiento, c.dias_gracia) >= corte || conv.has(r.unidad_id)) continue;
-    vencido.set(r.unidad_id, (vencido.get(r.unidad_id) || 0) + r.saldo);
+    const u = porUnidad.get(r.unidad_id) || { saldo: 0, cuotas: 0, base: 0 };
+    u.saldo += r.saldo; u.cuotas++; u.base += r.monto_cents;
+    porUnidad.set(r.unidad_id, u);
   }
-  const pct = (c.tasa_recargo_bp / 100).toFixed(2);
-  return insertarCargos(db, cid, [...vencido].map(([uid, saldo]) => ({
-    unidad: uid, tipo: 'recargo', concepto: `Recargo ${pct}% ${nombrePeriodo(periodo)} sobre saldo vencido`, periodo,
-    vencimiento: vencimientoDe(c, periodo), monto: Math.round(saldo * c.tasa_recargo_bp / 10000), reserva: 0, dedupe: `REC:${uid}:${periodo}`,
+  const pct = (c.tasa_recargo_bp / 100).toFixed(2).replace(/\.00$/, '');
+  const calc = u => modo === 'fijo' ? u.cuotas * c.recargo_fijo_cents : Math.round((modo === 'cuota' ? u.base : u.saldo) * c.tasa_recargo_bp / 10000);
+  const texto = u => modo === 'fijo' ? `Recargo fijo ${nombrePeriodo(periodo)} · ${u.cuotas} ${u.cuotas === 1 ? 'cuota vencida' : 'cuotas vencidas'}`
+    : modo === 'cuota' ? `Recargo ${pct}% sobre ${u.cuotas === 1 ? 'la cuota vencida' : `${u.cuotas} cuotas vencidas`} ${nombrePeriodo(periodo)}` : `Recargo ${pct}% ${nombrePeriodo(periodo)} sobre saldo vencido`;
+  return insertarCargos(db, cid, [...porUnidad].map(([uid, u]) => ({
+    unidad: uid, tipo: 'recargo', concepto: texto(u), periodo,
+    vencimiento: vencimientoDe(c, periodo), monto: calc(u), reserva: 0, dedupe: `REC:${uid}:${periodo}`,
   })), { concepto: `Recargos por mora · ${nombrePeriodo(periodo)}`, fecha: corte, origen: 'recargos' }, user);
+}
+
+// Recargo a una cuota específica: porcentaje sobre su importe o monto fijo. Uno por cuota y mes.
+export function recargoManual(db, cid, d, user) {
+  const cg = db.prepare(`SELECT c.*, ${SALDO_CARGO} AS saldo FROM cargos c WHERE c.id = ? AND c.condominio_id = ?`).get(d.cargo_id, cid) || fail(404, 'Cuota no encontrada.');
+  if (cg.cancelado_at) fail(409, 'La cuota está cancelada.');
+  if (!['ordinaria', 'extraordinaria', 'otro'].includes(cg.tipo)) fail(400, 'Solo se aplican recargos a cuotas (no a otros recargos).');
+  const monto = d.modo === 'porcentaje' ? Math.round(cg.monto_cents * d.porcentaje_bp / 10000) : d.monto_cents;
+  if (!(monto > 0)) fail(400, 'El recargo debe ser mayor a cero.');
+  const periodo = periodoDe(d.fecha);
+  const concepto = (d.concepto || (d.modo === 'porcentaje' ? `Recargo ${(d.porcentaje_bp / 100).toFixed(2).replace(/\.00$/, '')}% sobre ${cg.concepto}` : `Recargo sobre ${cg.concepto}`)).slice(0, 120);
+  const r = insertarCargos(db, cid, [{ unidad: cg.unidad_id, tipo: 'recargo', concepto, periodo, vencimiento: d.fecha, monto, reserva: 0, dedupe: `RECM:${cg.id}:${periodo}` }],
+    { concepto, fecha: d.fecha, origen: 'recargos' }, user);
+  if (!r.emitidos) fail(409, 'Esa cuota ya tiene un recargo aplicado este mes.', 'DUPLICADO');
+  return { ...r, monto };
 }
 
 export function bonificar(db, cid, cargoId, monto, motivo, user, fechaAplica = null) {

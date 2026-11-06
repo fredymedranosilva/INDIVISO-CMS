@@ -462,6 +462,9 @@ const COLUMNAS = [
   ['condominios', 'pronto_pago_dia', 'INTEGER NOT NULL DEFAULT 0 CHECK (pronto_pago_dia BETWEEN 0 AND 28)'],
   ['cargos', 'fondo_cuenta_id', 'INTEGER REFERENCES cuentas(id)'],    // fondo que recibe la aportación (NULL = fondo de reserva)
   ['egresos', 'fondo_id', 'INTEGER REFERENCES fondos(id)'],           // fondo específico del que se paga (NULL = reserva)
+  // recargos: «saldo» = % sobre el saldo vencido · «cuota» = % sobre cada cuota vencida · «fijo» = monto por cuota vencida
+  ['condominios', 'recargo_modo', "TEXT NOT NULL DEFAULT 'saldo' CHECK (recargo_modo IN ('saldo','cuota','fijo'))"],
+  ['condominios', 'recargo_fijo_cents', 'INTEGER NOT NULL DEFAULT 0 CHECK (recargo_fijo_cents >= 0)'],
 ];
 function migrar(db) {
   for (const [t, c, def] of COLUMNAS) {

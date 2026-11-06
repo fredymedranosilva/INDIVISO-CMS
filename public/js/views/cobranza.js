@@ -1,5 +1,5 @@
 // Cobranza: pagos, validación de comprobantes, emisión de cuotas, recargos, extraordinarias y convenios.
-import { S, capi, html, raw, mount, $, pesos, fecha, mesNombre, periodoActual, addMonths, hoy, puede, tabla, m, pill, ESTADO_PAGO, METODOS, toast, dialogo, confirmar, val, pesosDe, descargar, cargando, barra, tabs, pct } from '../ui.js';
+import { S, capi, html, raw, mount, $, pesos, fecha, mesNombre, periodoActual, addMonths, hoy, puede, tabla, m, pill, ESTADO_PAGO, METODOS, toast, dialogo, confirmar, val, pesosDe, descargar, cargando, barra, tabs, pct, leerPeriodo, selectorPeriodo, filtrosAuto } from '../ui.js';
 import { dialogoPago, imprimirRecibo, bancos, unidades, invalidar, opcionesUnidad, pedirMotivo } from './comun.js';
 import { refrescarContadores } from '../app.js';
 import { abrirImportacion } from './importar.js';
@@ -20,15 +20,14 @@ export async function render(el, ctx) {
 }
 
 async function pagos(el, ctx, q) {
-  const desde = q.get('desde') || `${addMonths(periodoActual(), -1)}-01`, hasta = q.get('hasta') || hoy(), estado = q.get('estado') || '';
+  const per = leerPeriodo(q), desde = per.desde, hasta = per.hasta, estado = q.get('estado') || '';
   const rows = await capi(`/pagos?desde=${desde}&hasta=${hasta}${estado ? `&estado=${estado}` : ''}`);
   const aplicados = rows.filter(r => r.estado === 'aplicado');
   mount(el, html`
     <form class="filters" data-filtros>
-      <label class="field"><span>Desde</span><input type="date" name="desde" value="${desde}"></label>
-      <label class="field"><span>Hasta</span><input type="date" name="hasta" value="${hasta}"></label>
-      <label class="field"><span>Estado</span><select name="estado"><option value="">Todos</option>${Object.entries(ESTADO_PAGO).map(([k, [l]]) => html`<option value="${k}" ${k === estado ? raw('selected') : ''}>${l}</option>`)}</select></label>
-      <button class="btn">Filtrar</button><span class="spacer"></span>
+      ${selectorPeriodo(per)}
+      <label class="field"><span>Estado</span><select name="estado" data-auto><option value="">Todos</option>${Object.entries(ESTADO_PAGO).map(([k, [l]]) => html`<option value="${k}" ${k === estado ? raw('selected') : ''}>${l}</option>`)}</select></label>
+      <span class="spacer"></span><a class="btn" href="#/c/${S.cid}/ingresos/?${per.qs}">Ingresos del periodo</a>
       <button class="btn ghost" type="button" data-action="csv">Exportar CSV</button>
     </form>
     <section class="panel flush">
@@ -44,9 +43,9 @@ async function pagos(el, ctx, q) {
         { t: '', k: r => html`<span class="row-actions">${r.folio ? html`<button class="link" data-action="recibo" data-id="${r.id}">Recibo</button>` : ''}${puede('cancelar') && r.estado === 'aplicado' ? html`<button class="link neg" data-action="cancelar" data-id="${r.id}" data-folio="${r.folio}">Cancelar</button>` : ''}</span>` },
       ], rows, { vacio: 'Sin pagos en el rango seleccionado.' })}
     </section>`);
-  $('[data-filtros]', el).addEventListener('submit', e => { e.preventDefault(); const f = e.target; location.hash = `${ctx.base}/pagos?desde=${f.desde.value}&hasta=${f.hasta.value}&estado=${f.estado.value}`; });
+  filtrosAuto($('[data-filtros]', el), p => { location.hash = `${ctx.base}/pagos?${p}`; });
   ctx.acciones({
-    recibo: d => imprimirRecibo(d.id),
+    recibo: async d => { const r = await capi(`/pagos/${d.id}/recibo`); await (await import('../informes.js')).pdfRecibos([r]); },
     csv: () => descargar(`/api/c/${S.cid}/export/pagos.csv`, 'pagos.csv'),
     cancelar: async d => {
       const motivo = await pedirMotivo(`Cancelar recibo R-${d.folio}`, 'Se registrará una contrapóliza que revierte el cobro y reabre los cargos que pagó. El recibo original se conserva como cancelado.', 'Cancelar recibo');
@@ -95,7 +94,7 @@ async function emision(el, ctx) {
       ${puede('capturar') ? html`<form class="filters top-gap" data-f="emitir"><label class="field"><span>Periodo</span><select name="periodo">${opP.map(x => html`<option value="${x}" ${x === p ? raw('selected') : ''}>${mesNombre(x)}</option>`)}</select></label><button class="btn primary">Emitir</button></form>` : ''}
     </section>
     <section class="panel c4"><header><h2>Recargos por mora</h2></header>
-      <p class="lead small">${(c.tasa_recargo_bp / 100).toFixed(2)}% mensual sobre cuotas vencidas por más de ${c.dias_gracia} días de gracia. Nunca se cobran recargos sobre recargos, ni a unidades con convenio vigente.</p>
+      <p class="lead small">${c.recargo_modo === 'fijo' ? `${pesos(c.recargo_fijo_cents)} por cada cuota vencida` : `${(c.tasa_recargo_bp / 100).toFixed(2)}% mensual ${c.recargo_modo === 'cuota' ? 'sobre el importe de cada cuota vencida' : 'sobre el saldo vencido'}`} con más de ${c.dias_gracia} días de gracia. Nunca se cobran recargos sobre recargos, ni a unidades con convenio vigente. Cámbielo en Configuración; para una cuota específica use «Aplicar recargo» en el estado de cuenta.</p>
       ${puede('capturar') ? html`<form class="filters top-gap" data-f="recargos"><label class="field"><span>Periodo</span><select name="periodo">${opP.map(x => html`<option value="${x}" ${x === p ? raw('selected') : ''}>${mesNombre(x)}</option>`)}</select></label><button class="btn">Calcular recargos</button></form>` : ''}
     </section>
     <section class="panel c4"><header><h2>Otros cargos</h2></header>

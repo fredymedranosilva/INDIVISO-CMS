@@ -37,9 +37,19 @@ for (const c of me.condominios) {
     await g(`${b}/cargos?unidad=${u.id}`);
     await g(`${b}/estado-cuenta/${u.id}?desde=${addM(P, -11)}-01&hasta=${H}`);
     await g(`${b}/estado-cuenta/${u.id}?desde=${P}-01&hasta=${H}`);
+    await g(`${b}/estado-cuenta/${u.id}?desde=${Y}-01-01&hasta=${H}`);
+    await g(`${b}/estado-cuenta/${u.id}?desde=2000-01-01&hasta=${H}`);
+    const rs = await g(`${b}/recibos?unidad=${u.id}&desde=${Y}-01-01&hasta=${H}`);
+    for (const r of rs || []) snap[`${b}/pagos/${r.pago.id}/recibo`] = r;
     if (u.adeudo > 0 || u.vencido > 0) await g(`${b}/constancia/${u.id}`);
   }
   await g(`${b}/estados-cuenta?desde=${P}-01&hasta=${H}`);
+  await g(`${b}/estados-cuenta?desde=${Y}-01-01&hasta=${H}`);
+  // reportes por mes y año (cada mes del año y el año completo)
+  const M = +P.slice(5);
+  for (let mes = 0; mes <= M; mes++) for (const r of ['ingresos', 'egresos', 'bancos', 'conciliacion']) await g(`${b}/reportes/${r}?anio=${Y}&mes=${mes}`);
+  for (let mes = 1; mes < M; mes++) { const fin = new Date(Date.UTC(+Y, mes, 0)).toISOString().slice(0, 10); await g(`${b}/morosidad?corte=${fin}`); await g(`${b}/pagos?desde=${Y}-${pad(mes)}-01&hasta=${fin}`); await g(`${b}/egresos?desde=${Y}-${pad(mes)}-01&hasta=${fin}`); }
+  await g(`${b}/pagos?desde=${P}-01&hasta=${H}`); await g(`${b}/egresos?desde=${P}-01&hasta=${H}`);
   await g(`${b}/morosidad?corte=${H}`);
   const pagos = await g(`${b}/pagos?desde=${addM(P, -1)}-01&hasta=${H}`);
   for (const p of pagos.filter(x => x.folio && x.estado === 'aplicado').slice(0, 150)) await g(`${b}/pagos/${p.id}/recibo`);

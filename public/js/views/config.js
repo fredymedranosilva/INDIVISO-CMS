@@ -1,5 +1,5 @@
 // Configuración del condominio: datos, parámetros de cobranza y controles.
-import { capi, html, mount, puede, toast, val, pesos, pesosDe, centsToInput, cargando, tabla, pill, dialogo } from '../ui.js';
+import { capi, html, raw, mount, puede, toast, val, pesos, pesosDe, centsToInput, cargando, tabla, pill, dialogo } from '../ui.js';
 
 export async function render(el, ctx) {
   cargando(el);
@@ -14,11 +14,17 @@ export async function render(el, ctx) {
         <label class="field"><span>RFC</span><input name="rfc" value="${c.rfc || ''}" maxlength="13" ${ro}></label>
         <label class="field"><span>Ciudad</span><input name="ciudad" value="${c.ciudad || ''}" maxlength="80" ${ro}></label>
         <label class="field full"><span>Domicilio</span><input name="direccion" value="${c.direccion || ''}" maxlength="250" ${ro}></label></div>`)}
-      ${sec('Cobranza', 'Vencimiento de las cuotas, tolerancia antes de generar recargos y tasa moratoria mensual según el reglamento del condominio.', html`<div class="form-grid">
+      ${sec('Cobranza', 'Vencimiento de las cuotas, días de tolerancia antes de generar recargos y aportación al fondo de reserva, según el reglamento del condominio.', html`<div class="form-grid">
         <label class="field"><span>Día de vencimiento</span><input name="dia" type="number" min="1" max="28" value="${c.dia_vencimiento}" ${ro}></label>
         <label class="field"><span>Días de gracia</span><input name="gracia" type="number" min="0" max="60" value="${c.dias_gracia}" ${ro}></label>
-        <label class="field"><span>Recargo mensual (%)</span><input name="tasa" class="num-in" value="${(c.tasa_recargo_bp / 100).toFixed(2)}" ${ro}></label>
         <label class="field"><span>Aportación al fondo de reserva (% de la cuota)</span><input name="reserva" class="num-in" value="${(c.pct_reserva_bp / 100).toFixed(2)}" ${ro}></label></div>`)}
+      ${sec('Recargos', 'Cómo se calcula el recargo mensual de las cuotas vencidas (nunca se cobran recargos sobre recargos). También puede aplicar un recargo a una cuota específica desde el estado de cuenta de la unidad.', html`<div class="form-grid">
+        <label class="field full"><span>Forma de cálculo</span><select name="rmodo" ${ro}>
+          <option value="cuota" ${c.recargo_modo === 'cuota' ? raw('selected') : ''}>Porcentaje sobre el importe de cada cuota vencida</option>
+          <option value="saldo" ${c.recargo_modo === 'saldo' ? raw('selected') : ''}>Porcentaje sobre el saldo vencido de la unidad</option>
+          <option value="fijo" ${c.recargo_modo === 'fijo' ? raw('selected') : ''}>Monto fijo por cada cuota vencida</option></select></label>
+        <label class="field"><span>Porcentaje mensual (%)</span><input name="tasa" class="num-in" value="${(c.tasa_recargo_bp / 100).toFixed(2)}" ${ro}></label>
+        <label class="field"><span>Monto fijo por cuota</span><input name="rfijo" class="num-in" inputmode="decimal" value="${centsToInput(c.recargo_fijo_cents || 0)}" ${ro}></label></div>`)}
       ${sec('Descuento por pronto pago', 'Se aplica solo al registrar o validar un pago que liquida la cuota ordinaria completa a más tardar el día indicado del mes de la cuota. Queda como bonificación con su póliza. Deje 0 para desactivarlo.', html`<div class="form-grid">
         <label class="field"><span>Descuento (% de la cuota)</span><input name="pp_pct" class="num-in" value="${((c.pronto_pago_bp || 0) / 100).toFixed(2)}" ${ro}></label>
         <label class="field"><span>Pagando a más tardar el día</span><input name="pp_dia" type="number" min="0" max="28" value="${c.pronto_pago_dia || 0}" ${ro}></label></div>`)}
@@ -50,7 +56,7 @@ export async function render(el, ctx) {
     try {
       await capi('/config', { method: 'PUT', body: { nombre: val(f, 'nombre'), razon_social: val(f, 'razon_social') || null, rfc: val(f, 'rfc') || null, ciudad: val(f, 'ciudad') || null, direccion: val(f, 'direccion') || null,
         dia_vencimiento: +f.dia.value, dias_gracia: +f.gracia.value, tasa_recargo_bp: bp(f.tasa.value, 20), pct_reserva_bp: bp(f.reserva.value, 50), umbral_aprobacion_cents: pesosDe(f, 'umbral', { cero: true }),
-        pronto_pago_bp: bp(f.pp_pct.value || 0, 50), pronto_pago_dia: +f.pp_dia.value || 0 } });
+        pronto_pago_bp: bp(f.pp_pct.value || 0, 50), pronto_pago_dia: +f.pp_dia.value || 0, recargo_modo: f.rmodo.value, recargo_fijo_cents: pesosDe(f, 'rfijo', { requerido: false, cero: true }) || 0 } });
       toast('Configuración guardada.'); ctx.recargar();
     } catch (err) { toast(err.message, 'error'); }
   });

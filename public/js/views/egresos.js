@@ -1,8 +1,9 @@
 // Egresos: captura con CFDI, aprobación por un segundo usuario, pago a proveedores.
-import { S, capi, html, raw, mount, $, pesos, fecha, hoy, addMonths, periodoActual, puede, tabla, m, pill, ESTADO_EGRESO, toast, dialogo, val, pesosDe, centsToInput, idem, descargar, cargando, tabs, leerArchivo, confirmar } from '../ui.js';
+import { S, capi, html, raw, mount, $, pesos, fecha, hoy, addMonths, periodoActual, puede, tabla, m, pill, ESTADO_EGRESO, toast, dialogo, val, pesosDe, centsToInput, idem, descargar, cargando, tabs, leerArchivo, confirmar, leerPeriodo, selectorPeriodo, filtrosAuto } from '../ui.js';
 import { bancos, subirArchivo, pedirMotivo } from './comun.js';
 import { refrescarContadores } from '../app.js';
 import { abrirImportacion } from './importar.js';
+import { egresosVista } from './finrep.js';
 
 export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'egresos').split('?');
@@ -11,12 +12,14 @@ export async function render(el, ctx) {
   const [t, c] = await Promise.all([capi('/tablero'), capi('/config')]);
   mount(el, html`<div class="title-row"><div><h1>Egresos</h1><p class="sub">Todo egreso de ${pesos(c.umbral_aprobacion_cents)} o más, y todo uso del fondo de reserva, requiere aprobación de un usuario distinto a quien lo capturó.</p></div>
     <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarEgresos">Importar desde Excel</button><button class="btn primary" data-action="nuevo">Capturar egreso</button>` : ''}</div></div>
-    ${tabs([['egresos', 'Egresos'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['porpagar', 'Cuentas por pagar'], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
+    ${tabs([['egresos', 'Egresos'], ['resumen', 'Reporte mensual'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['porpagar', 'Cuentas por pagar'], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
   ctx.acciones({ nuevo: () => capturar(ctx), importarEgresos: () => abrirImportacion('egresos', { onOk: () => ctx.recargar() }) });
   const body = $('#eg-body', el);
   if (sub === 'proveedores') return proveedores(body, ctx);
+  if (sub === 'resumen') return egresosVista(body, ctx, q, `${ctx.base}/resumen`);
   if (sub === 'porpagar') { await porPagar(body); return lista($('#eg-lista', body), ctx, { estado: 'aprobado' }, 'pagar'); }
-  return lista(body, ctx, sub === 'aprobar' ? { estado: 'por_aprobar' } : { estado: q.get('estado') || '', desde: q.get('desde') || `${addMonths(periodoActual(), -2)}-01`, hasta: q.get('hasta') || hoy() }, sub === 'aprobar');
+  const per = leerPeriodo(q);
+  return lista(body, ctx, sub === 'aprobar' ? { estado: 'por_aprobar' } : { estado: q.get('estado') || '', desde: per.desde, hasta: per.hasta, per }, sub === 'aprobar');
 }
 
 // Cuentas por pagar: egresos aprobados sin pagar, por proveedor y antigüedad.
@@ -35,15 +38,14 @@ async function porPagar(el) {
 }
 
 async function lista(el, ctx, f, cola) {
-  const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
+  const qs = new URLSearchParams(Object.entries(f).filter(([k, v]) => v && k !== 'per')).toString();
   const [rows, bs] = await Promise.all([capi(`/egresos?${qs}`), bancos()]);
   const vigentes = rows.filter(r => ['aprobado', 'pagado'].includes(r.estado));
   mount(el, html`
     ${cola ? '' : html`<form class="filters" data-filtros>
-      <label class="field"><span>Desde</span><input type="date" name="desde" value="${f.desde}"></label>
-      <label class="field"><span>Hasta</span><input type="date" name="hasta" value="${f.hasta}"></label>
-      <label class="field"><span>Estado</span><select name="estado"><option value="">Todos</option>${Object.entries(ESTADO_EGRESO).map(([k, [l]]) => html`<option value="${k}" ${k === f.estado ? raw('selected') : ''}>${l}</option>`)}</select></label>
-      <button class="btn">Filtrar</button><span class="spacer"></span><button class="btn ghost" type="button" data-action="csv">Exportar CSV</button></form>`}
+      ${selectorPeriodo(f.per)}
+      <label class="field"><span>Estado</span><select name="estado" data-auto><option value="">Todos</option>${Object.entries(ESTADO_EGRESO).map(([k, [l]]) => html`<option value="${k}" ${k === f.estado ? raw('selected') : ''}>${l}</option>`)}</select></label>
+      <span class="spacer"></span><button class="btn ghost" type="button" data-action="csv">Exportar CSV</button><a class="btn" href="#/c/${S.cid}/egresos/resumen?${f.per.qs}">Reporte con gráficas y PDF</a></form>`}
     <section class="panel flush"><header><h2>${cola === 'pagar' ? 'Documentos por pagar' : cola ? 'Esperando aprobación' : `${rows.length} egresos`}</h2><span class="meta">${cola === 'pagar' ? 'Registre el pago para que salga de bancos y de proveedores por pagar.' : cola ? 'Revise la factura y la partida antes de aprobar.' : `Aprobados y pagados: ${pesos(vigentes.reduce((a, r) => a + r.total_cents, 0))}`}</span></header>
     ${tabla([
       { t: 'Folio', k: r => `E-${r.folio}` },
@@ -59,7 +61,7 @@ async function lista(el, ctx, f, cola) {
         ${r.estado === 'aprobado' && puede('capturar') ? html`<button class="btn sm" data-action="pagar" data-id="${r.id}" data-total="${r.total_cents}" data-folio="${r.folio}">Pagar</button>` : ''}
         ${['aprobado', 'pagado', 'por_aprobar'].includes(r.estado) && puede('cancelar') ? html`<button class="link neg" data-action="cancelar" data-id="${r.id}" data-folio="${r.folio}">Cancelar</button>` : ''}</span>` },
     ], rows, { vacio: cola === 'pagar' ? 'No hay egresos por pagar.' : cola ? 'No hay egresos esperando aprobación.' : 'Sin egresos en el rango.' })}</section>`);
-  $('[data-filtros]', el)?.addEventListener('submit', e => { e.preventDefault(); const x = e.target; location.hash = `${ctx.base}/egresos?desde=${x.desde.value}&hasta=${x.hasta.value}&estado=${x.estado.value}`; });
+  filtrosAuto($('[data-filtros]', el), p => { location.hash = `${ctx.base}/egresos?${p}`; });
   ctx.acciones({
     csv: () => descargar(`/api/c/${S.cid}/export/egresos.csv`, 'egresos.csv'),
     comp: d => descargar(`/api/c/${S.cid}/archivos/${d.id}`, d.nombre),

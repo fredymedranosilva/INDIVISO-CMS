@@ -4,7 +4,7 @@ import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tx, DATA_DIR } from './db.mjs';
 import { audit, sha256, token, hashPassword, verifyAuditChain, rateLimit as rl } from './security.mjs';
-import { fail, v, hoy, periodoDe, periodoActual, addMonths, mask } from './util.mjs';
+import { fail, v, hoy, periodoDe, periodoActual, addMonths, finDeMes, mask } from './util.mjs';
 import * as F from './finanzas.mjs';
 import * as R from './reportes.mjs';
 import { membresias } from './auth.mjs';
@@ -62,6 +62,15 @@ const sinSecretos = b => {
 const q = (ctx, k, def = null) => ctx.query.get(k) ?? def;
 const qPeriodo = (ctx, k, def) => { const p = q(ctx, k, def); if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) fail(400, `Periodo «${k}» inválido.`); return p; };
 const qFecha = (ctx, k, def) => { const p = q(ctx, k, def); if (!/^\d{4}-\d{2}-\d{2}$/.test(p)) fail(400, `Fecha «${k}» inválida.`); return p; };
+// Periodo de consulta por año y mes (mes 0 = año completo, hasta el mes en curso).
+function qRango(ctx) {
+  const anio = qInt(ctx, 'anio', +hoy().slice(0, 4)), mes = qInt(ctx, 'mes', +hoy().slice(5, 7));
+  if (anio < 2000 || anio > 2100 || mes > 12) fail(400, 'Periodo inválido.');
+  const desdeP = mes ? `${anio}-${String(mes).padStart(2, '0')}` : `${anio}-01`;
+  let hastaP = mes ? desdeP : `${anio}-12`;
+  if (!mes && hastaP > periodoActual() && desdeP <= periodoActual()) hastaP = periodoActual();
+  return { anio, mes, desdeP, hastaP, desde: `${desdeP}-01`, hasta: finDeMes(hastaP) };
+}
 const qInt = (ctx, k, def = null) => { const s = q(ctx, k); if (s == null || s === '') return def; if (!/^\d+$/.test(s)) fail(400, `«${k}» inválido.`); return +s; };
 const idParam = (ctx, k = 'id') => { const s = ctx.params[k]; if (!/^\d+$/.test(s)) fail(400, 'Identificador inválido.'); return +s; };
 
@@ -182,11 +191,11 @@ export const apiRoutes = [
   ['PUT', `${C}/config`, { perm: 'config' }, ctx => {
     const b = v(ctx.body, { nombre: 'str|max120', razon_social: 'str|opt|max160', rfc: 'rfc|opt', direccion: 'str|opt|max250', ciudad: 'str|opt|max80',
       dia_vencimiento: 'int|min1|max28', dias_gracia: 'int|min0|max60', tasa_recargo_bp: 'int|min0|max2000', pct_reserva_bp: 'int|min0|max5000', umbral_aprobacion_cents: 'cents|zero',
-      pronto_pago_bp: 'int|min0|max5000|opt', pronto_pago_dia: 'int|min0|max28|opt' });
+      pronto_pago_bp: 'int|min0|max5000|opt', pronto_pago_dia: 'int|min0|max28|opt', recargo_modo: 'enum|saldo|cuota|fijo|opt', recargo_fijo_cents: 'cents|zero|opt' });
     if ((b.pronto_pago_bp > 0) !== (b.pronto_pago_dia > 0) && (b.pronto_pago_bp || b.pronto_pago_dia)) fail(400, 'Para el descuento por pronto pago indique el porcentaje y el día límite.');
     return escribir(ctx, 'config_actualizada', 'condominio', () => {
-      ctx.db.prepare(`UPDATE condominios SET nombre=?, razon_social=?, rfc=?, direccion=?, ciudad=?, dia_vencimiento=?, dias_gracia=?, tasa_recargo_bp=?, pct_reserva_bp=?, umbral_aprobacion_cents=?, pronto_pago_bp=?, pronto_pago_dia=? WHERE id=?`)
-        .run(b.nombre, b.razon_social, b.rfc, b.direccion, b.ciudad, b.dia_vencimiento, b.dias_gracia, b.tasa_recargo_bp, b.pct_reserva_bp, b.umbral_aprobacion_cents, b.pronto_pago_bp ?? 0, b.pronto_pago_dia ?? 0, ctx.cid);
+      ctx.db.prepare(`UPDATE condominios SET nombre=?, razon_social=?, rfc=?, direccion=?, ciudad=?, dia_vencimiento=?, dias_gracia=?, tasa_recargo_bp=?, pct_reserva_bp=?, umbral_aprobacion_cents=?, pronto_pago_bp=?, pronto_pago_dia=?, recargo_modo=COALESCE(?, recargo_modo), recargo_fijo_cents=COALESCE(?, recargo_fijo_cents) WHERE id=?`)
+        .run(b.nombre, b.razon_social, b.rfc, b.direccion, b.ciudad, b.dia_vencimiento, b.dias_gracia, b.tasa_recargo_bp, b.pct_reserva_bp, b.umbral_aprobacion_cents, b.pronto_pago_bp ?? 0, b.pronto_pago_dia ?? 0, b.recargo_modo ?? null, b.recargo_fijo_cents ?? null, ctx.cid);
       return ctx.cid;
     });
   }],
@@ -267,12 +276,13 @@ export const apiRoutes = [
     const c = F.condo(ctx.db, ctx.cid);
     const personas = ctx.db.prepare("SELECT p.nombre, p.email, up.rol FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = ?").all(u.id);
     const bancos = ctx.db.prepare("SELECT banco, nombre, clabe_mask FROM cuentas_banco WHERE condominio_id = ? AND activo = 1 AND fondo = 'operacion'").all(ctx.cid);
-    return { condominio: { nombre: c.nombre, razon_social: c.razon_social, rfc: c.rfc, direccion: c.direccion }, unidad: u, personas, bancos, desde, hasta, ...R.estadoCuenta(ctx.db, ctx.cid, u.id, desde, hasta) };
+    return { condominio: datosCondo(c), unidad: u, personas, bancos, desde, hasta, ...R.estadoCuenta(ctx.db, ctx.cid, u.id, desde, hasta) };
   }],
   ['GET', `${C}/estados-cuenta`, { perm: 'ver' }, ctx => {
     const hasta = qFecha(ctx, 'hasta', hoy()); const desde = qFecha(ctx, 'desde', `${periodoDe(hasta)}-01`);
     const c = F.condo(ctx.db, ctx.cid);
-    return { condominio: c, desde, hasta, unidades: ctx.db.prepare('SELECT id, clave, torre, referencia FROM unidades WHERE condominio_id = ? AND activo = 1 ORDER BY torre, clave').all(ctx.cid)
+    const bancos = ctx.db.prepare("SELECT banco, nombre, clabe_mask FROM cuentas_banco WHERE condominio_id = ? AND activo = 1 AND fondo = 'operacion'").all(ctx.cid);
+    return { condominio: datosCondo(c), bancos, desde, hasta, unidades: ctx.db.prepare('SELECT id, clave, torre, referencia, cuota_cents FROM unidades WHERE condominio_id = ? AND activo = 1 ORDER BY torre, clave').all(ctx.cid)
       .map(u => ({ unidad: u, propietario: ctx.db.prepare("SELECT GROUP_CONCAT(p.nombre, ', ') n FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = ? AND up.rol = 'propietario'").get(u.id).n, ...R.estadoCuenta(ctx.db, ctx.cid, u.id, desde, hasta) })) };
   }],
   ['GET', `${C}/cargos`, { perm: 'ver' }, ctx => {
@@ -302,6 +312,12 @@ export const apiRoutes = [
   ['POST', `${C}/cobranza/recargos`, { perm: 'capturar' }, ctx => {
     const b = v(ctx.body, { periodo: 'periodo' });
     return escribir(ctx, 'recargos_calculados', 'emision', () => F.calcularRecargos(ctx.db, ctx.cid, b.periodo, ctx.user));
+  }],
+  ['POST', `${C}/cobranza/recargo-manual`, { perm: 'capturar' }, ctx => {
+    const b = v(ctx.body, { cargo_id: 'int|min1', modo: 'enum|porcentaje|monto', porcentaje_bp: 'int|min1|max5000|opt', monto_cents: 'cents|opt', fecha: 'date', concepto: 'str|opt|max120' });
+    if (b.modo === 'porcentaje' && !b.porcentaje_bp) fail(400, 'Indique el porcentaje del recargo.');
+    if (b.modo === 'monto' && !b.monto_cents) fail(400, 'Indique el monto del recargo.');
+    return escribir(ctx, 'recargo_manual', 'cargo', () => F.recargoManual(ctx.db, ctx.cid, b, ctx.user));
   }],
   ['POST', `${C}/cargos/:id/bonificar`, { perm: 'cancelar' }, ctx => {
     const b = v(ctx.body, { monto_cents: 'cents', motivo: 'str|max200' });
@@ -340,11 +356,15 @@ export const apiRoutes = [
     const p = ctx.db.prepare("SELECT p.*, u.clave, u.referencia AS ref_unidad, b.banco FROM pagos p JOIN unidades u ON u.id = p.unidad_id LEFT JOIN cuentas_banco b ON b.id = p.cuenta_banco_id WHERE p.id = ? AND p.condominio_id = ?").get(idParam(ctx), ctx.cid) || fail(404, 'Pago no encontrado');
     if (ctx.rol === 'residente') { if (!unidadesDeResidente(ctx).some(u => u.id === p.unidad_id)) fail(404, 'Pago no encontrado'); } else exigir(ctx, 'ver');
     if (p.estado !== 'aplicado' && p.estado !== 'cancelado') fail(409, 'El pago aún no tiene recibo.');
-    const apl = ctx.db.prepare('SELECT a.monto_cents, a.revertida, c.concepto, c.periodo FROM aplicaciones a JOIN cargos c ON c.id = a.cargo_id WHERE a.pago_id = ? ORDER BY a.id').all(p.id);
-    const c = F.condo(ctx.db, ctx.cid);
-    const propietario = ctx.db.prepare("SELECT GROUP_CONCAT(p.nombre, ', ') n FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = ? AND up.rol = 'propietario'").get(p.unidad_id).n;
-    return { condominio: { nombre: c.nombre, razon_social: c.razon_social, rfc: c.rfc, direccion: c.direccion }, pago: p, propietario, aplicaciones: apl,
-      sello: sha256(`${ctx.cid}|${p.id}|${p.folio}|${p.monto_cents}|${p.fecha}|${p.poliza_id}`).slice(0, 24).toUpperCase() };
+    return reciboDe(ctx, p);
+  }],
+  // Todos los recibos de una unidad en un rango (para descargarlos juntos desde el estado de cuenta).
+  ['GET', `${C}/recibos`, {}, ctx => {
+    const uid = qInt(ctx, 'unidad') ?? fail(400, 'Indique la unidad.');
+    if (ctx.rol === 'residente') { if (!unidadesDeResidente(ctx).some(u => u.id === uid)) fail(404, 'Unidad no encontrada'); } else exigir(ctx, 'ver');
+    const hasta = qFecha(ctx, 'hasta', hoy()), desde = qFecha(ctx, 'desde', `${hoy().slice(0, 4)}-01-01`);
+    return ctx.db.prepare("SELECT p.*, u.clave, u.referencia AS ref_unidad, b.banco FROM pagos p JOIN unidades u ON u.id = p.unidad_id LEFT JOIN cuentas_banco b ON b.id = p.cuenta_banco_id WHERE p.unidad_id = ? AND p.condominio_id = ? AND p.folio IS NOT NULL AND p.estado IN ('aplicado','cancelado') AND p.fecha BETWEEN ? AND ? ORDER BY p.fecha, p.folio")
+      .all(uid, ctx.cid, desde, hasta).map(p => reciboDe(ctx, p));
   }],
 
   // ===== Morosidad =====
@@ -647,6 +667,10 @@ export const apiRoutes = [
   ['GET', `${C}/reportes/cxp`, { perm: 'ver' }, ctx => R.cuentasPorPagar(ctx.db, ctx.cid, qFecha(ctx, 'corte', hoy()))],
   ['GET', `${C}/reportes/liquidacion`, { perm: 'ver' }, ctx => R.liquidacionAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/anual`, { perm: 'ver' }, ctx => R.informeAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
+  ['GET', `${C}/reportes/ingresos`, { perm: 'ver' }, ctx => { const r = qRango(ctx); return { anio: r.anio, mes: r.mes, ...R.ingresos(ctx.db, ctx.cid, r.desde, r.hasta), mensual: R.ingresosMensual(ctx.db, ctx.cid, r.anio).meses }; }],
+  ['GET', `${C}/reportes/egresos`, { perm: 'ver' }, ctx => { const r = qRango(ctx); return { anio: r.anio, mes: r.mes, ...R.egresosReporte(ctx.db, ctx.cid, r.desde, r.hasta), mensual: R.egresosMensual(ctx.db, ctx.cid, r.anio).meses }; }],
+  ['GET', `${C}/reportes/bancos`, { perm: 'ver' }, ctx => { const r = qRango(ctx); return { anio: r.anio, mes: r.mes, ...R.saldosBancarios(ctx.db, ctx.cid, r.desdeP, r.hastaP) }; }],
+  ['GET', `${C}/reportes/conciliacion`, { perm: 'ver' }, ctx => { const r = qRango(ctx); return { anio: r.anio, mes: r.mes, ...R.conciliacion(ctx.db, ctx.cid, r.desdeP, r.hastaP) }; }],
   ['GET', `${C}/integridad`, { perm: 'ver' }, ctx => R.verificarIntegridad(ctx.db, ctx.cid)],
 
   // ===== Exportaciones CSV =====
@@ -751,6 +775,17 @@ export const apiRoutes = [
 ];
 
 apiRoutes.push(...rutasComunidad({ C, PERMS, escribir, exigir, idParam, q, unidadesDeResidente }));
+
+const datosCondo = c => ({ nombre: c.nombre, razon_social: c.razon_social, rfc: c.rfc, direccion: c.direccion, ciudad: c.ciudad, dia_vencimiento: c.dia_vencimiento, dias_gracia: c.dias_gracia,
+  tasa_recargo_bp: c.tasa_recargo_bp, recargo_modo: c.recargo_modo, recargo_fijo_cents: c.recargo_fijo_cents, pronto_pago_bp: c.pronto_pago_bp, pronto_pago_dia: c.pronto_pago_dia });
+
+function reciboDe(ctx, p) {
+  const apl = ctx.db.prepare('SELECT a.monto_cents, a.revertida, c.concepto, c.periodo FROM aplicaciones a JOIN cargos c ON c.id = a.cargo_id WHERE a.pago_id = ? ORDER BY a.id').all(p.id);
+  const c = F.condo(ctx.db, ctx.cid);
+  const propietario = ctx.db.prepare("SELECT GROUP_CONCAT(p.nombre, ', ') n FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = ? AND up.rol = 'propietario'").get(p.unidad_id).n;
+  return { condominio: datosCondo(c), pago: p, propietario, aplicaciones: apl,
+    sello: sha256(`${ctx.cid}|${p.id}|${p.folio}|${p.monto_cents}|${p.fecha}|${p.poliza_id}`).slice(0, 24).toUpperCase() };
+}
 
 function limiteUsuario(ctx, k, n = 10) { return rl(`${k}:${ctx.user.id}`, n, 60 * 60 * 1000); }
 

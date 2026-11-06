@@ -1,5 +1,5 @@
 // Bancos y conciliación: importar el estado de cuenta, conciliar contra pagos y egresos.
-import { S, capi, html, raw, mount, pesos, fecha, puede, tabla, pill, toast, dialogo, val, cargando, parsePesos } from '../ui.js';
+import { S, capi, html, raw, mount, pesos, fecha, puede, tabla, pill, toast, dialogo, val, cargando, parsePesos, ICON } from '../ui.js';
 import { unidades, opcionesUnidad, invalidar } from './comun.js';
 import { refrescarContadores } from '../app.js';
 
@@ -14,7 +14,7 @@ export async function render(el, ctx) {
   const movs = b ? await capi(`/bancos/${b.id}/movimientos${pend ? '?estado=pendientes' : ''}`) : [];
   mount(el, html`
     <div class="title-row"><div><h1>Bancos y conciliación</h1><p class="sub">Importe el estado de cuenta en CSV: los movimientos repetidos se descartan solos y los depósitos se cruzan con los pagos por importe, fecha y referencia.</p></div>
-      <div class="actions">${puede('config') ? html`<button class="btn" data-action="cuenta">Nueva cuenta</button>` : ''}${b && puede('capturar') ? html`<button class="btn" data-action="auto">Conciliar automáticamente</button><button class="btn primary" data-action="importar">Importar estado de cuenta</button>` : ''}</div></div>
+      <div class="actions"><a class="btn" href="#/c/${S.cid}/reportes/bancos">${raw(ICON.pdf)}<span>Saldos bancarios</span></a><a class="btn" href="#/c/${S.cid}/reportes/conciliacion">${raw(ICON.pdf)}<span>Conciliación</span></a>${puede('config') ? html`<button class="btn" data-action="cuenta">Nueva cuenta</button>` : ''}${b && puede('capturar') ? html`<button class="btn" data-action="auto">Conciliar automáticamente</button><button class="btn primary" data-action="importar">Importar estado de cuenta</button>` : ''}</div></div>
     <div class="grid top">
       ${bs.map(x => html`<a class="panel c4 bank-card ${x.id === bid ? 'sel' : ''}" href="#/c/${S.cid}/bancos/${x.id}">
         <header><h2>${x.banco} · ${x.nombre}</h2><span class="meta">${x.numero_mask || ''}${x.fondo === 'reserva' ? ' · reserva' : ''}</span></header>

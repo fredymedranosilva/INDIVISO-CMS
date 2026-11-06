@@ -4,6 +4,7 @@ import { S, api, html, raw, mount, $, $$, ICON, LOGO, toast, errorToast, puede, 
 const VISTAS = {
   tablero: () => import('./views/tablero.js'),
   cobranza: () => import('./views/cobranza.js'),
+  ingresos: () => import('./views/ingresos.js'),
   morosidad: () => import('./views/morosidad.js'),
   egresos: () => import('./views/egresos.js'),
   bancos: () => import('./views/bancos.js'),
@@ -22,7 +23,7 @@ const VISTAS = {
 
 const NAV = [
   [null, [['tablero', 'Tablero', 'tablero', 'ver']]],
-  ['Cobranza', [['cobranza', 'Cobranza', 'cobranza', 'ver', 'pagos'], ['morosidad', 'Morosidad', 'morosidad', 'ver'], ['estados', 'Estados de cuenta', 'estados', 'ver']]],
+  ['Cobranza', [['cobranza', 'Cobranza', 'cobranza', 'ver', 'pagos'], ['ingresos', 'Ingresos', 'ingresos', 'ver'], ['morosidad', 'Morosidad', 'morosidad', 'ver'], ['estados', 'Estados de cuenta', 'estados', 'ver']]],
   ['Gasto y bancos', [['egresos', 'Egresos', 'egresos', 'ver', 'egresos'], ['bancos', 'Bancos y conciliación', 'bancos', 'ver', 'bancos']]],
   ['Padrón', [['unidades', 'Unidades y residentes', 'unidades', 'ver'], ['comunidad', 'Comunidad', 'comunidad', 'ver']]],
   ['Finanzas', [['presupuesto', 'Presupuesto', 'presupuesto', 'ver'], ['contabilidad', 'Contabilidad', 'contabilidad', 'ver'], ['reportes', 'Reportes', 'reportes', 'ver'], ['cierres', 'Cierres', 'cierres', 'ver']]],

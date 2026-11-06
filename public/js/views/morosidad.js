@@ -1,5 +1,5 @@
 // Morosidad: antigüedad de saldos por unidad, gestiones de cobranza y constancias.
-import { S, capi, html, raw, mount, $, pesos, fecha, hoy, puede, tabla, m, pill, toast, dialogo, val, pesosDe, descargar, cargando, pct } from '../ui.js';
+import { S, capi, html, raw, mount, $, pesos, fecha, hoy, puede, tabla, m, pill, toast, dialogo, val, pesosDe, descargar, cargando, pct, ICON } from '../ui.js';
 import { imprimirConstancia, invalidar } from './comun.js';
 import { barraAntiguedad } from './tablero.js';
 
@@ -18,13 +18,14 @@ export async function render(el, ctx) {
   mount(el, html`
     <div class="title-row"><div><h1>Morosidad</h1>
       <p class="sub"><b>${r.morosas}</b> de ${r.unidades} unidades (${pct(r.pct_morosidad)}) tienen saldo vencido por <b>${pesos(total)}</b> al ${fecha(corte)}${r.d90mas ? html`; <b>${pesos(r.d90mas)}</b> supera los 90 días` : ''}.</p></div>
-      <div class="actions"><button class="btn ghost" data-action="csv">Exportar CSV</button></div></div>
+      <div class="actions"><button class="btn ghost" data-action="csv">Exportar CSV</button><button class="btn" data-action="avisos">${raw(ICON.pdf)}<span>Avisos de cobro</span></button><button class="btn" data-action="pdfCxc">${raw(ICON.pdf)}<span>Cuentas por cobrar</span></button><button class="btn primary" data-action="pdfMor">${raw(ICON.pdf)}<span>Reporte de morosidad</span></button></div></div>
     <section class="panel">
       <div class="kpis">
         ${[['Por vencer', r.por_vencer], ['1 a 30 días', r.d30], ['31 a 60 días', r.d60], ['61 a 90 días', r.d90], ['Más de 90 días', r.d90mas]].map(([l, v], i) => html`<div class="kpi"><p class="label"><span class="sw b${i}"></span>${l}</p><p class="kpi-value md ${v ? '' : 'zero'}">${pesos(v)}</p></div>`)}
       </div>
       <div class="top-gap">${barraAntiguedad(r)}</div>
     </section>
+    ${r.morosas ? html`<section class="panel top-gap"><header><h2>Mayor adeudo vencido</h2><span class="meta">Las 8 unidades con más saldo vencido</span></header><div id="ch-mor"></div></section>` : ''}
     <form class="filters top-gap" data-filtros>
       <label class="field"><span>Fecha de corte</span><input type="date" name="corte" value="${corte}" max="${hoy()}"></label>
       <label class="check"><input type="checkbox" name="todas" ${solo ? '' : raw('checked')}><span>Incluir unidades al corriente</span></label>
@@ -48,7 +49,12 @@ export async function render(el, ctx) {
       ], rows, { vacio: 'Ninguna unidad tiene saldo vencido a la fecha de corte.', pie: ['Total', pesos(rows.reduce((a, u) => a + u.por_vencer, 0)), pesos(rows.reduce((a, u) => a + u.d30, 0)), pesos(rows.reduce((a, u) => a + u.d60, 0)), pesos(rows.reduce((a, u) => a + u.d90, 0)), pesos(rows.reduce((a, u) => a + u.d90mas, 0)), pesos(rows.reduce((a, u) => a + u.vencido, 0)), '', ''] })}
     </section>`);
   $('[data-filtros]', el).addEventListener('submit', e => { e.preventDefault(); const f = e.target; location.hash = `${ctx.base}/?corte=${f.corte.value}&todas=${f.todas.checked ? 1 : 0}`; });
+  const top = d.unidades.filter(u => u.activo && u.vencido > 0).sort((a, b) => b.vencido - a.vencido).slice(0, 8);
+  if (top.length) window.Charts?.barList($('#ch-mor', el), top.map(u => ({ label: `${u.clave} · ${u.propietario || ''}`, value: u.vencido / 100 })), { format: v => '$' + Math.round(v).toLocaleString('es-MX') });
+  const pdf = async fn => { toast('Generando PDF…'); const [c, I] = await Promise.all([capi('/config'), import('../informes.js')]); await I[fn](d, c); };
   ctx.acciones({
+    pdfCxc: () => pdf('pdfCxc'), pdfMor: () => pdf('pdfMorosidad'),
+    avisos: async () => { toast('Preparando avisos de cobro…'); const all = await capi(`/estados-cuenta?desde=${corte.slice(0, 4)}-01-01&hasta=${corte}`); await (await import('../informes.js')).pdfAvisos(all.unidades.filter(x => x.pendientes.some(p => p.vencimiento < corte)), { condominio: all.condominio, bancos: all.bancos, fecha: corte }); },
     csv: () => descargar(`/api/c/${S.cid}/export/cartera.csv`, 'cartera.csv'),
     constancia: dd => imprimirConstancia(dd.id),
     gestion: dd => dialogo({

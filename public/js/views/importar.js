@@ -20,7 +20,13 @@ const hojaCuentas = c => ({ nombre: 'Cuentas', filas: [['Código', 'Cuenta', 'N�
 const hojaFormas = () => ({ nombre: 'Formas de pago', filas: [['Forma de pago', 'Clave SAT (también se acepta)'], ...FORMAS] });
 const hojaPartidas = c => ({ nombre: 'Partidas', filas: [['Código', 'Partida'], ...c.partidas.map(p => [p.codigo, p.nombre])] });
 const instrucciones = lineas => ({ nombre: 'Instrucciones', anchos: [110], filas: [['Cómo llenar la plantilla'], ...lineas.map(l => [l])] });
-const COMUNES = ['• Llene la primera hoja. No cambie los encabezados; puede borrar columnas opcionales o cambiar su orden.',
+// Tres filas de ejemplo (en amarillo, marcadas «EJEMPLO · borre esta fila»): muestran cómo capturar y nunca se importan.
+const MARCA = 'EJEMPLO · borre esta fila';
+const hojaConEjemplos = (nombre, enc, ejemplos, resto = []) => ({ nombre, filas: [enc, ...ejemplos, ...resto], ejemplos: ejemplos.map((_, i) => i + 1) });
+const dmy = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+const diasAtras = n => { const d = new Date(); d.setDate(d.getDate() - n); return dmy(d); };
+const COMUNES = ['• Las 3 filas en amarillo son EJEMPLOS: muestran cómo capturar y NO se importan. Puede borrarlas o escribir sus datos debajo.',
+  '• Llene la primera hoja. No cambie los encabezados; puede borrar columnas opcionales o cambiar su orden.',
   '• Fechas en DD/MM/AAAA (o como fecha de Excel). Importes con o sin signo de pesos y comas: 3,450.00',
   '• Antes de guardar nada verá una vista previa con los errores de cada fila. Las filas con error no se importan.',
   '• Importar dos veces el mismo archivo no duplica registros.'];
@@ -30,13 +36,16 @@ const DEF = {
   pagos: {
     titulo: 'Importar pagos desde Excel', archivo: 'plantilla-pagos',
     ayuda: 'Cada fila es un pago recibido: se aplica a los cargos más antiguos de la unidad, se emite su recibo y un excedente queda como saldo a favor (igual que al capturarlo a mano).',
-    plantilla: c => [
-      { nombre: 'Pagos', filas: [['Unidad', 'Fecha de pago', 'Importe', 'Forma de pago', 'Cuenta bancaria', 'Referencia', 'Comentarios'], ...c.unidades.filter(u => u.activo).map(u => [u.clave])] },
-      instrucciones([...COMUNES, '• La hoja trae todas las unidades: llene solo las que pagaron; las filas sin importe se ignoran.',
-        '• Unidad: clave o referencia de pago (hoja Unidades). Cuenta bancaria: código de la hoja Cuentas, últimos 4 dígitos, nombre o «Caja».',
+    plantilla: c => {
+      const us = c.unidades.filter(u => u.activo), b = c.bancos[0]?.codigo || 'Caja';
+      const ej = us.slice(0, 3).map((u, i) => [u.clave, u.propietario || '', [3450, 1800, 5000][i], diasAtras(3 - i), ['Transferencia', 'Depósito', 'Efectivo'][i], i === 2 ? 'Caja' : b, ['SPEI 0012345678', 'FOLIO 445566', ''][i], `${MARCA}${i === 1 ? ' · pago parcial' : i === 2 ? ' · en efectivo va a Caja' : ''}`]);
+      return [hojaConEjemplos('Pagos', ['Vivienda', 'Propietario', 'Importe', 'Fecha', 'Forma de pago', 'Cuenta bancaria', 'Referencia', 'Comentarios'], ej, us.map(u => [u.clave, u.propietario || ''])),
+      instrucciones([...COMUNES, '• La hoja trae todas las viviendas: llene Importe y Fecha solo en las que pagaron; las filas sin importe se ignoran.',
+        '• Vivienda: clave o referencia de pago (hoja Unidades); la columna Propietario es solo de consulta. Cuenta bancaria: código de la hoja Cuentas, últimos 4 dígitos, nombre o «Caja».',
         '• Forma de pago: Transferencia, Efectivo, Cheque, Tarjeta, Depósito o Domiciliación (también la clave SAT: 01, 02, 03, 04, 28).',
         '• Referencia: clave de rastreo o folio de la operación; evita registrar dos veces el mismo depósito.']),
-      hojaUnidades(c), hojaCuentas(c), hojaFormas()],
+      hojaUnidades(c), hojaCuentas(c), hojaFormas()];
+    },
     opciones: c => html`<div class="form-grid">
       <label class="field"><span>Cuenta para filas sin cuenta</span><select name="cuenta_banco_id"><option value="">Ninguna (indicar en cada fila)</option>${c.bancos.map(b => html`<option value="${b.id}" ${b.fondo === 'operacion' && c.bancos.filter(x => x.fondo === 'operacion').length === 1 ? raw('selected') : ''}>${b.codigo} · ${b.nombre}</option>`)}</select></label>
       <label class="check"><input type="checkbox" name="confirmar_duplicados"><span>Importar aunque exista un pago de la misma unidad e importe en ±3 días</span></label></div>`,
@@ -44,14 +53,24 @@ const DEF = {
   },
   egresos: {
     titulo: 'Importar egresos desde Excel', archivo: 'plantilla-egresos',
-    ayuda: 'Cada fila es un gasto. Los de importe igual o mayor al umbral, y los del fondo de reserva, quedan pendientes de aprobación por otro usuario; los demás se provisionan y, si traen forma de pago o cuenta, se registran como pagados.',
-    plantilla: c => [
-      { nombre: 'Egresos', filas: [['Fecha', 'Concepto', 'Proveedor', 'RFC', 'Importe', 'IVA', 'Retenciones', 'Clasificación presupuestal', 'Fondo', 'Forma de pago', 'Cuenta bancaria', 'Referencia', 'Fecha de pago', 'Folio factura', 'UUID', 'Comentarios']] },
-      instrucciones([...COMUNES, '• Importe: total pagado. IVA y Retenciones son opcionales (el subtotal se calcula). También puede usar una columna Subtotal.',
-        '• Clasificación presupuestal: código o nombre de la hoja Partidas. Fondo: Operación (por omisión) o Reserva.',
-        '• Proveedor: si no existe en el catálogo se da de alta con su nombre (y RFC, si lo trae).',
-        '• Si la fila trae Forma de pago, Cuenta bancaria o Fecha de pago, el egreso se registra como pagado.']),
-      hojaPartidas(c), hojaCuentas(c), hojaFormas(), { nombre: 'Proveedores', filas: [['Nombre', 'RFC'], ...c.proveedores.map(p => [p.nombre, p.rfc || ''])] }],
+    ayuda: 'Mismas columnas que la plantilla de Vivook. Cada fila es un gasto: si trae forma de pago o cuenta bancaria queda pagado; los del fondo de reserva o de importe igual o mayor al umbral quedan pendientes de aprobación por otro usuario.',
+    plantilla: c => {
+      const part = re => c.partidas.find(p => re.test(p.nombre)) || c.partidas[0] || { codigo: '', nombre: '' };
+      const pv = (re, def) => c.proveedores.find(p => re.test(p.nombre))?.nombre || def;
+      const b = c.bancos[0]?.codigo || 'Caja', etiqueta = p => `${p.codigo} · ${p.nombre}`;
+      const ej = [
+        ['1ra quincena de vigilancia', pv(/vigil|segur/i, 'Seguridad Privada del Norte'), 15650, diasAtras(5), 'Transferencia', b, 'SPEI 0099887766', etiqueta(part(/vigil|segur/i)), 'Operación', MARCA],
+        ['Recibo de luz de áreas comunes', pv(/cfe|luz|electric/i, 'CFE'), 2563.5, diasAtras(4), 'Transferencia', b, 'CFE 123456789', etiqueta(part(/el[eé]ctric|luz|energ/i)), 'Operación', MARCA],
+        ['Reparación de bomba de agua', pv(/bomba|hidr/i, 'Hidráulica del Centro'), 1200, diasAtras(2), 'Efectivo', 'Caja', '', etiqueta(part(/bomba|hidr/i)), 'Operación', `${MARCA} · pagado en efectivo`],
+      ];
+      return [hojaConEjemplos('Egresos', ['Concepto', 'Proveedor', 'Importe', 'Fecha', 'Forma de pago', 'Cuenta bancaria', 'Referencia', 'Clasificación presupuestal', 'Fondo', 'Comentarios'], ej),
+        instrucciones([...COMUNES, '• Importe: total pagado en pesos.',
+          '• Clasificación presupuestal: código o nombre de la hoja Partidas. Fondo: Operación (ordinario), Reserva (extraordinario) o el nombre de un fondo (hoja Fondos).',
+          '• Proveedor: si no existe en el catálogo se da de alta con su nombre.',
+          '• Si la fila trae Forma de pago o Cuenta bancaria, el egreso queda pagado en esa fecha. Cuenta bancaria: código de la hoja Cuentas o «Caja».',
+          '• Los egresos del fondo de reserva o de importe igual o mayor al umbral quedan pendientes de aprobación de un segundo usuario.']),
+        hojaPartidas(c), hojaCuentas(c), hojaFormas(), { nombre: 'Fondos', filas: [['Fondo'], ['Operación'], ['Reserva'], ...(c.fondos || []).map(f => [f])] }, { nombre: 'Proveedores', filas: [['Nombre'], ...c.proveedores.map(p => [p.nombre])] }];
+    },
     opciones: c => html`<div class="form-grid">
       <label class="field"><span>Partida para filas sin partida</span><select name="partida_id"><option value="">Ninguna (indicar en cada fila)</option>${c.partidas.map(p => html`<option value="${p.id}">${p.codigo} · ${p.nombre}</option>`)}</select></label>
       <label class="field"><span>Cuenta de pago para filas sin cuenta</span><select name="cuenta_banco_id"><option value="">Ninguna</option>${c.bancos.map(b => html`<option value="${b.id}">${b.codigo} · ${b.nombre}</option>`)}</select></label>
@@ -62,15 +81,22 @@ const DEF = {
   proveedores: {
     titulo: 'Importar proveedores', archivo: 'proveedores',
     ayuda: 'Da de alta proveedores nuevos y completa los datos de contacto de los existentes (se identifican por RFC o nombre).',
-    plantilla: c => [{ nombre: 'Proveedores', filas: [['Nombre', 'RFC', 'Giro', 'Correo', 'Teléfono', 'CLABE'], ...c.proveedores.map(p => [p.nombre, p.rfc || '', p.giro || '', p.email || '', p.telefono || ''])] },
+    plantilla: c => [hojaConEjemplos('Proveedores', ['Nombre', 'RFC', 'Giro', 'Correo', 'Teléfono', 'CLABE', 'Comentarios'], [
+      ['Seguridad Privada del Norte SA de CV', 'SPN010101AB1', 'Vigilancia', 'contacto@seguridadnorte.mx', '8112345678', '', MARCA],
+      ['Jardinería Los Pinos', '', 'Jardinería', '', '8187654321', '', MARCA],
+      ['Elevadores del Bajío', 'EBA990202CD2', 'Mantenimiento de elevadores', 'servicio@elevadoresbajio.mx', '', '012345678901234567', MARCA]],
+      c.proveedores.map(p => [p.nombre, p.rfc || '', p.giro || '', p.email || '', p.telefono || ''])),
       instrucciones([...COMUNES, '• La CLABE (18 dígitos) se guarda enmascarada: solo los últimos 4 dígitos.'])],
   },
   directorio: {
     titulo: 'Importar directorio (unidades y residentes)', archivo: 'directorio',
     ayuda: 'Crea las unidades que no existen y actualiza las existentes con las columnas que traiga el archivo (las celdas vacías no borran datos). Vincula propietarios e inquilinos.',
     plantilla: c => [
-      { nombre: 'Directorio', filas: [['Clave', 'Torre', 'Tipo', 'm2', 'Indiviso %', 'Cuota mensual', 'Ocupación', 'Activa', 'Propietario', 'Correo', 'Teléfono', 'RFC', 'Inquilino', 'Correo inquilino', 'Teléfono inquilino', 'Notas'],
-        ...c.unidades.map(u => [u.clave, u.torre || '', u.tipo, u.m2 ?? '', +(u.indiviso_ppm / 10000).toFixed(4), u.cuota_cents / 100, OCUP[u.estado], u.activo ? 'Sí' : 'No', u.propietario || '', u.email || '', u.telefono || '', u.rfc || '', u.inquilino || '', u.email_inq || '', u.tel_inq || '', u.notas || ''])] },
+      hojaConEjemplos('Directorio', ['Clave', 'Torre', 'Tipo', 'm2', 'Indiviso %', 'Cuota mensual', 'Ocupación', 'Activa', 'Propietario', 'Correo', 'Teléfono', 'RFC', 'Inquilino', 'Correo inquilino', 'Teléfono inquilino', 'Notas'], [
+        ['101', 'Torre 1', 'departamento', 85, 1.25, 2676.2, 'Ocupada', 'Sí', 'Karla Fernández', 'karla@correo.com', '8112345678', '', '', '', '', MARCA],
+        ['102', 'Torre 1', 'departamento', 92, 1.3542, 2899.5, 'En renta', 'Sí', 'Luis Pérez', 'luis@correo.com', '', '', 'Ana Ruiz', 'ana@correo.com', '8187654321', MARCA],
+        ['L-1', '', 'local', 40, 0.6, 1300, 'Vacante', 'Sí', 'Inmobiliaria Centro SA', '', '', 'ICE010101AB1', '', '', '', MARCA]],
+        c.unidades.map(u => [u.clave, u.torre || '', u.tipo, u.m2 ?? '', +(u.indiviso_ppm / 10000).toFixed(4), u.cuota_cents / 100, OCUP[u.estado], u.activo ? 'Sí' : 'No', u.propietario || '', u.email || '', u.telefono || '', u.rfc || '', u.inquilino || '', u.email_inq || '', u.tel_inq || '', u.notas || ''])),
       instrucciones([...COMUNES, '• Clave: identificador único de la unidad. Si usa Torre + número (p. ej. «Torre 1» y «101»), la unidad nueva se crea como «1-101».',
         '• Indiviso en porcentaje con 4 decimales (la suma de todas las unidades debe dar 100%). Cuota: cuota ordinaria mensual.',
         '• Ocupación: Ocupada, Vacante o En renta. Activa: Sí o No (las inactivas no generan cuotas).',
@@ -81,7 +107,9 @@ const DEF = {
     titulo: 'Saldos iniciales por unidad', archivo: 'saldos-iniciales',
     ayuda: 'Para empezar a operar con los saldos que traía cada unidad en el sistema anterior. Un saldo positivo es adeudo; uno negativo (o con «A favor») es saldo a favor. Se registra contra «Remanente de ejercicios anteriores», no como ingreso del año. Solo se registra uno por unidad.',
     plantilla: c => [
-      { nombre: 'Saldos', filas: [['Unidad', 'Propietario', 'Saldo', 'Concepto'], ...c.unidades.filter(u => u.activo).map(u => [u.clave, u.propietario || ''])] },
+      hojaConEjemplos('Saldos', ['Unidad', 'Propietario', 'Saldo', 'Concepto'], (() => { const us = c.unidades.filter(u => u.activo).slice(0, 3); return [
+        [us[0]?.clave || '101', us[0]?.propietario || '', 7250, `${MARCA} · adeudo de 2 cuotas`], [us[1]?.clave || '102', us[1]?.propietario || '', -1200, `${MARCA} · saldo a favor (negativo)`], [us[2]?.clave || '103', us[2]?.propietario || '', 0, `${MARCA} · al corriente`]]; })(),
+        c.unidades.filter(u => u.activo).map(u => [u.clave, u.propietario || ''])),
       instrucciones([...COMUNES, '• Saldo: positivo = adeudo de la unidad; negativo o «1,200.00 (A favor)» = saldo a favor. Deje vacío o en 0 si está al corriente.',
         '• El adeudo inicial vence en la fecha de corte (cuenta como vencido) y no genera recargos.']), hojaUnidades(c)],
     opciones: () => html`<div class="form-grid"><label class="field"><span>Fecha de corte de los saldos</span><input type="date" name="fecha_corte" value="${finMesAnterior()}" max="${hoy()}" required></label>
@@ -92,7 +120,11 @@ const DEF = {
     titulo: 'Importar presupuesto desde Excel', archivo: 'presupuesto',
     ayuda: 'Cada fila es una partida con su importe por mes. Si solo trae una columna «Anual» se reparte en 12 meses iguales (sin perder centavos). Las partidas que no vienen en el archivo no se modifican.',
     plantilla: (c, x) => [
-      { nombre: 'Presupuesto', filas: [['Código', 'Partida', ...MES], ...c.partidas.map(p => [p.codigo, p.nombre, ...MES.map((_, i) => (x.valores.get(`${p.id}:${i + 1}`) || 0) / 100)])] },
+      hojaConEjemplos('Presupuesto', ['Código', 'Partida', ...MES, 'Comentarios'], [
+        ['EJEMPLO', 'Vigilancia (mismo importe cada mes)', ...MES.map(() => 31300), MARCA],
+        ['EJEMPLO', 'Mantenimiento de elevadores (trimestral)', ...MES.map((_, i) => i % 3 === 0 ? 9800 : 0), MARCA],
+        ['EJEMPLO', 'Pintura (solo en abril)', ...MES.map((_, i) => i === 3 ? 45000 : 0), MARCA]],
+        c.partidas.map(p => [p.codigo, p.nombre, ...MES.map((_, i) => (x.valores.get(`${p.id}:${i + 1}`) || 0) / 100)])),
       instrucciones([...COMUNES, '• Código: el de la partida (hoja Partidas). Importes por mes en pesos.', '• En lugar de los 12 meses puede usar una sola columna «Anual» o «Mensual».']), hojaPartidas(c)],
     opciones: () => puede('config') ? html`<label class="check"><input type="checkbox" name="crear_partidas"><span>Crear las partidas que no existan en el catálogo</span></label>` : '',
     leer: f => ({ crear_partidas: !!f.crear_partidas?.checked }),
@@ -185,6 +217,7 @@ function pintar(el, r, filas, archivo) {
       <div class="${s.errores ? 'neg-t' : ''}"><span>Con error</span><b>${s.errores}</b></div>
       ${s.total_cents ? html`<div><span>Importe</span><b>${pesos(s.total_cents)}</b></div>` : ''}
     </div>
+    ${s.ejemplos ? html`<p class="note">Se ignoraron ${s.ejemplos} ${s.ejemplos === 1 ? 'fila' : 'filas'} de ejemplo de la plantilla.</p>` : ''}
     <p class="small muted">Encabezados en la fila ${r.encabezado}. Columnas reconocidas: ${Object.entries(r.columnas).map(([k, h]) => html`<span class="pill neutral" title="${h}">${COLUMNA[k] || k}</span> `)}
       ${r.ignoradas.length ? html`<br>No se usan: ${r.ignoradas.join(', ')}.` : ''}</p>
     ${s.partidas_nuevas?.length ? html`<p class="note warn">Se crearán ${s.partidas_nuevas.length} partidas nuevas: ${s.partidas_nuevas.slice(0, 8).join(' · ')}${s.partidas_nuevas.length > 8 ? '…' : ''}</p>` : ''}

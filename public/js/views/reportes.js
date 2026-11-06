@@ -1,22 +1,25 @@
 // Reportes financieros e informe anual (liquidación del ejercicio para la asamblea).
-import { capi, html, raw, mount, $, pesos, fecha, mesCorto, mesNombre, periodoActual, hoy, tabla, m, cargando, tabs, imprimir, pct, LOGO, barra } from '../ui.js';
+import { ingresosVista, egresosVista, cxcVista, bancosVista, conciliacionVista, morosidadVista } from './finrep.js';
+import { capi, html, raw, mount, $, pesos, fecha, mesCorto, mesNombre, periodoActual, hoy, tabla, m, cargando, tabs, imprimir, pct, LOGO, barra, leerPeriodo, selectorPeriodo, filtrosAuto } from '../ui.js';
 
-const rango = (q, def) => ({ desde: q.get('desde') || def.desde, hasta: q.get('hasta') || def.hasta });
-const filtroMeses = (r, extra = '') => html`<form class="filters" data-f><label class="field"><span>Desde</span><input type="month" name="desde" value="${r.desde}"></label><label class="field"><span>Hasta</span><input type="month" name="hasta" value="${r.hasta}"></label>${raw(extra)}<button class="btn">Ver</button><span class="spacer"></span><button class="btn ghost" type="button" data-action="imprimir">Imprimir</button></form>`;
+const rango = q => { const p = leerPeriodo(q, { mes: 0 }); return { desde: p.desdeP, hasta: p.hastaP, p }; };
+const filtroMeses = (r, extra = '') => html`<form class="filters" data-f>${selectorPeriodo(r.p)}${raw(extra)}<span class="spacer"></span><button class="btn ghost" type="button" data-action="imprimir">Imprimir</button></form>`;
 
 export async function render(el, ctx) {
-  const [sub, qs] = (ctx.params[0] || 'resultados').split('?');
+  const [sub, qs] = (ctx.params[0] || 'ingresos').split('?');
   const q = new URLSearchParams(qs || '');
-  mount(el, html`<div class="title-row"><div><h1>Reportes</h1><p class="sub">Estados financieros calculados del libro contable. Cada reporte se puede imprimir o guardar en PDF.</p></div></div>
-    ${tabs([['resultados', 'Estado de resultados'], ['balance', 'Balance general'], ['flujo', 'Flujo de efectivo'], ['fondos', 'Fondos'], ['liquidacion', 'Liquidación anual'], ['anual', 'Informe anual']], sub, ctx.base)}<div id="rp-body"></div>`);
+  mount(el, html`<div class="title-row"><div><h1>Reportes</h1><p class="sub">Reportes por mes y año con gráficas, listos para descargar en PDF; estados financieros calculados del libro contable.</p></div></div>
+    ${tabs([['ingresos', 'Ingresos'], ['egresos', 'Egresos'], ['cxc', 'Cuentas por cobrar'], ['bancos', 'Saldos bancarios'], ['conciliacion', 'Conciliación'], ['morosidad', 'Morosidad'], ['resultados', 'Estado de resultados'], ['balance', 'Balance general'], ['flujo', 'Flujo de efectivo'], ['fondos', 'Fondos'], ['liquidacion', 'Liquidación anual'], ['anual', 'Informe anual']], sub, ctx.base)}<div id="rp-body"></div>`);
   const body = $('#rp-body', el);
   cargando(body);
+  const nuevos = { ingresos: ingresosVista, egresos: egresosVista, cxc: cxcVista, bancos: bancosVista, conciliacion: conciliacionVista, morosidad: morosidadVista };
+  if (nuevos[sub] || !sub) return (nuevos[sub] || ingresosVista)(body, ctx, q, `${ctx.base}/${sub || 'ingresos'}`);
   const anio = hoy().slice(0, 4);
   const def = { desde: `${anio}-01`, hasta: periodoActual() };
   const c = await capi('/config');
   const fns = { resultados, balance, flujo, reserva, fondos, liquidacion, anual };
   const doc = await (fns[sub] || resultados)(body, ctx, q, def, c);
-  $('[data-f]', body)?.addEventListener('submit', e => { e.preventDefault(); const f = e.target; const p = new URLSearchParams(new FormData(f)); location.hash = `${ctx.base}/${sub}?${p}`; });
+  filtrosAuto($('[data-f]', body), p => { location.hash = `${ctx.base}/${sub}?${p}`; });
   ctx.acciones({ imprimir: () => imprimir(doc) });
 }
 
@@ -107,7 +110,7 @@ async function liquidacion(el, ctx, q, def, c) {
     <tfoot><tr><td>Total</td><td class="r num">${pesos(l.totales.adeudo_previo)}</td>${l.periodos.map(p => html`<td class="r num small">${l.totales.meses[p].emitido ? pct(l.totales.meses[p].pagado / l.totales.meses[p].emitido, 0) : ''}</td>`)}
       <td class="r num">${pesos(l.totales.emitido)}</td><td class="r num">${pesos(l.totales.pagado)}</td><td class="r num">${pesos(l.totales.saldo)}</td></tr></tfoot></table></div>`;
   const anios = [ej, ej - 1, ej - 2].filter(x => x <= +hoy().slice(0, 4));
-  mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio">${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label><button class="btn">Ver</button><span class="spacer"></span>
+  mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio" data-auto>${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label><button class="btn">Ver</button><span class="spacer"></span>
       <button class="btn ghost" type="button" data-action="excel">Exportar a Excel</button><button class="btn ghost" type="button" data-action="imprimir">Imprimir</button></form>
     <section class="panel"><div class="leyenda"><span><span class="st pagado">✓</span> pagado</span><span><span class="st parcial">$</span> pago parcial (saldo)</span><span><span class="st pendiente">$</span> sin pago (saldo)</span><span>La fila de totales muestra el % cobrado de cada mes.</span></div>
       <div class="top-gap">${t}</div></section>`);
@@ -147,6 +150,6 @@ async function anual(el, ctx, q, def, c) {
     <div class="firma"><div>Administración</div><div>Comité de vigilancia</div></div>
     <footer class="doc-foot"><span>Informe generado del libro contable de partida doble; todas las cifras son trazables a sus pólizas.</span><span>Indiviso CMS</span></footer></article>`;
   const anios = [ej + 1, ej, ej - 1, ej - 2].filter(x => x <= +hoy().slice(0, 4));
-  mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio">${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label><button class="btn">Ver</button><span class="spacer"></span><button class="btn primary" type="button" data-action="imprimir">Imprimir informe para asamblea</button></form>${doc}`);
+  mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio" data-auto>${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label><button class="btn">Ver</button><span class="spacer"></span><button class="btn primary" type="button" data-action="imprimir">Imprimir informe para asamblea</button></form>${doc}`);
   return doc;
 }

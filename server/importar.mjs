@@ -87,6 +87,9 @@ export function metodo(x, permitidos) {
 
 const MESES = [['ene', 'enero', 'jan'], ['feb', 'febrero'], ['mar', 'marzo'], ['abr', 'abril', 'apr'], ['may', 'mayo'], ['jun', 'junio'], ['jul', 'julio'], ['ago', 'agosto', 'aug'], ['sep', 'sept', 'septiembre', 'setiembre'], ['oct', 'octubre'], ['nov', 'noviembre'], ['dic', 'diciembre', 'dec']];
 
+export const MARCA_EJEMPLO = 'EJEMPLO · borre esta fila';
+const esEjemplo = c => typeof c === 'string' && norm(c).startsWith('ejemplo');
+
 // ---------- Búsquedas en catálogos ----------
 function buscador(items, claves) {
   // claves(item) → lista de textos que identifican al item; se indexa normalizado y compactado.
@@ -194,28 +197,23 @@ const TIPOS = {
   },
 
   egresos: {
+    // Mismas columnas que la plantilla de Vivook: Concepto, Proveedor, Importe, Fecha, Forma de pago, Cuenta bancaria,
+    // Referencia, Clasificación presupuestal, Fondo y Comentarios. Si trae forma de pago o cuenta, el egreso queda pagado.
     perm: 'capturar', nombre: 'egresos',
     columnas: {
       concepto: ['concepto', 'descripcion', 'detalle'],
       proveedor: ['proveedor', 'beneficiario', 'razon social', 'nombre proveedor'],
-      rfc: ['rfc', 'rfc proveedor'],
       importe: ['importe', 'total', 'monto', 'importe total', 'cantidad'],
-      subtotal: ['subtotal', 'sub total', 'importe sin iva'],
-      iva: ['iva', 'impuesto', 'iva 16'],
-      retenciones: ['retenciones', 'retencion', 'isr retenido', 'iva retenido'],
-      fecha: ['fecha', 'fecha del gasto', 'fecha factura', 'fecha egreso'],
-      partida: ['clasificacion presupuestal', 'partida', 'partida presupuestal', 'clasificacion', 'cuenta de gasto', 'rubro', 'categoria'],
-      fondo: ['fondo'],
+      fecha: ['fecha', 'fecha del gasto', 'fecha egreso', 'fecha de pago'],
       metodo: ['forma de pago', 'metodo', 'metodo de pago', 'forma pago'],
       cuenta: ['cuenta bancaria', 'cuenta', 'banco', 'cuenta de cargo', 'caja o banco'],
       referencia: ['referencia', 'clave de rastreo', 'rastreo', 'cheque', 'no cheque'],
-      fecha_pago: ['fecha de pago', 'fecha pago', 'pagado el'],
-      factura: ['folio factura', 'factura', 'folio', 'serie y folio'],
-      uuid: ['uuid', 'folio fiscal', 'uuid cfdi'],
+      partida: ['clasificacion presupuestal', 'partida', 'partida presupuestal', 'clasificacion', 'cuenta de gasto', 'rubro', 'categoria'],
+      fondo: ['fondo'],
       comentarios: ['comentarios', 'notas', 'observaciones'],
     },
-    req: ['concepto', 'fecha'],
-    prep(ctx, aux) { aux.provNuevos = []; },
+    req: ['concepto', 'fecha', 'importe'],
+    prep(ctx, aux) { aux.provNuevos = []; aux.fondos = ctx.db.prepare('SELECT id, nombre FROM fondos WHERE condominio_id = ? AND activo = 1').all(ctx.cid); },
     fila(ctx, r, aux, ocurr) {
       const f = fecha(r.fecha);
       if (f > hoy()) fail(400, 'La fecha del gasto no puede ser futura.');
@@ -224,52 +222,46 @@ const TIPOS = {
       const com = txt(r.comentarios);
       if (com && concepto.length + com.length + 3 <= 200) concepto = `${concepto} · ${com}`;
       concepto = concepto.slice(0, 200);
-      const total = importe(r.importe), sub = importe(r.subtotal, { campo: 'Subtotal' }), iva = importe(r.iva, { campo: 'IVA' }) || 0, ret = importe(r.retenciones, { campo: 'Retenciones' }) || 0;
-      let subtotal;
-      if (sub != null) { subtotal = sub; if (total != null && total !== sub + iva - ret) fail(400, `El total ${pesosTxt(total)} no cuadra con subtotal + IVA − retenciones (${pesosTxt(sub + iva - ret)}).`); }
-      else if (total != null) subtotal = total - iva + ret;
-      else fail(400, 'Indique el importe (o el subtotal).');
-      if (subtotal < 0 || subtotal + iva - ret <= 0) fail(400, 'El total del egreso debe ser mayor a cero.');
-      const partida = buscarPartida(aux, r.partida, ctx) || aux.partidaDefecto || fail(400, 'Indique la partida presupuestal (o elija una por defecto).');
+      const total = importe(r.importe);
+      if (!total) fail(400, 'El importe debe ser mayor a cero.');
+      const partida = buscarPartida(aux, r.partida, ctx) || aux.partidaDefecto || fail(400, 'Indique la clasificación presupuestal (o elija una por defecto).');
+      // Fondo: Operación (ordinario), Reserva (extraordinario) o el nombre de un fondo específico.
       const fondoTxt = norm(r.fondo);
-      const fondo = !fondoTxt || /ordinari|operacion|corriente|mantenimiento|general/.test(fondoTxt) ? 'operacion' : /reserva/.test(fondoTxt) ? 'reserva' : fail(400, `Fondo «${txt(r.fondo)}» no reconocido: use Operación o Reserva.`);
-      // Proveedor por RFC o nombre; si no existe se da de alta.
+      let fondo = 'operacion', fondo_id = null;
+      if (fondoTxt && !/ordinari|operacion|corriente|mantenimiento|general/.test(fondoTxt.replace(/extraordinari/, 'X'))) {
+        const fe = aux.fondos.find(x => norm(x.nombre) === fondoTxt || fondoTxt.includes(norm(x.nombre)));
+        if (fe) { fondo = 'reserva'; fondo_id = fe.id; }
+        else if (/reserva|extraordinari/.test(fondoTxt)) fondo = 'reserva';
+        else fail(400, `Fondo «${txt(r.fondo)}» no reconocido: use Operación, Reserva o el nombre de un fondo.`);
+      }
+      // Proveedor por nombre; si no existe se da de alta.
       let proveedor_id = null;
-      const pn = txt(r.proveedor).slice(0, 160), rfc = txt(r.rfc).toUpperCase() || null;
-      if (rfc && !/^[A-ZÑ&]{3,4}\d{6}[A-Z\d]{3}$/.test(rfc)) fail(400, `RFC «${rfc}» inválido.`);
-      if (pn || rfc) {
-        let p = (rfc && aux.proveedores.find(x => x.rfc === rfc)) || (pn && aux.proveedores.find(x => norm(x.nombre) === norm(pn)));
+      const pn = txt(r.proveedor).slice(0, 160);
+      if (pn) {
+        let p = aux.proveedores.find(x => norm(x.nombre) === norm(pn));
         if (!p) {
-          if (!pn) fail(400, `No existe un proveedor con RFC ${rfc}; agregue su nombre.`);
-          p = { id: Number(ctx.db.prepare('INSERT INTO proveedores (condominio_id, nombre, rfc, created_at) VALUES (?,?,?,?)').run(ctx.cid, pn, rfc, Date.now()).lastInsertRowid), nombre: pn, rfc };
+          p = { id: Number(ctx.db.prepare('INSERT INTO proveedores (condominio_id, nombre, created_at) VALUES (?,?,?)').run(ctx.cid, pn, Date.now()).lastInsertRowid), nombre: pn };
           aux.proveedores.push(p); aux.provNuevos.push(pn);
         }
         proveedor_id = p.id;
       }
-      let uuid = txt(r.uuid) || null;
-      if (uuid) uuid = v({ uuid }, { uuid: 'uuid' }).uuid;
-      const base = [ctx.cid, f, subtotal, iva, ret, norm(concepto), proveedor_id || '', uuid || ''].join('|');
+      const base = [ctx.cid, f, total, norm(concepto), proveedor_id || ''].join('|');
       const idem_key = `IMP-E-${sha256(`${base}|${ocurr(base)}`).slice(0, 48)}`;
-      const e = F.crearEgreso(ctx.db, ctx.cid, { proveedor_id, cuenta_id: partida.id, fondo, fecha: f, concepto, subtotal_cents: subtotal, iva_cents: iva, retenciones_cents: ret,
-        factura_folio: txt(r.factura).slice(0, 40) || null, cfdi_uuid: uuid, idem_key }, ctx.user);
+      const e = F.crearEgreso(ctx.db, ctx.cid, { proveedor_id, cuenta_id: partida.id, fondo, fondo_id, fecha: f, concepto, subtotal_cents: total, iva_cents: 0, retenciones_cents: 0, idem_key }, ctx.user);
       if (e.repetido) return { accion: 'omitido', detalle: `Ya importado antes (E-${e.folio}).` };
-      const totalC = subtotal + iva - ret;
-      // Pago: si la fila trae forma de pago, cuenta o fecha de pago (o así se indicó para todo el archivo).
+      // Pago: si la fila trae forma de pago o cuenta (o así se indicó para todo el archivo), se registra pagado en la misma fecha.
       const b = buscarBanco(aux, r.cuenta);
       const met = metodo(r.metodo, ['transferencia', 'cheque', 'efectivo', 'tarjeta', 'domiciliacion']);
-      const quierePago = aux.registrarPago || b !== undefined || met || txt(r.fecha_pago);
       let pagado = '';
-      if (quierePago) {
+      if (aux.registrarPago || b !== undefined || met) {
         if (e.estado !== 'aprobado') pagado = ' · requiere aprobación; regístrelo como pagado después de aprobarlo';
         else {
-          const fp = fecha(r.fecha_pago, 'Fecha de pago') || f;
-          if (fp > hoy()) fail(400, 'La fecha de pago no puede ser futura.');
-          const banco = b === undefined ? (met === 'efectivo' ? null : aux.bancoDefecto ?? fail(400, 'Indique la cuenta de cargo del pago (o elija una por defecto).')) : b;
-          F.pagarEgreso(ctx.db, ctx.cid, e.id, { fecha_pago: fp, metodo: met || (banco ? 'transferencia' : 'efectivo'), cuenta_banco_id: banco?.id ?? null, referencia: txt(r.referencia).slice(0, 60) || null }, ctx.user);
+          const banco = b === undefined ? (met === 'efectivo' ? null : aux.bancoDefecto ?? fail(400, 'Indique la cuenta bancaria de donde salió el pago (o elija una por defecto).')) : b;
+          F.pagarEgreso(ctx.db, ctx.cid, e.id, { fecha_pago: f, metodo: met || (banco ? 'transferencia' : 'efectivo'), cuenta_banco_id: banco?.id ?? null, referencia: txt(r.referencia).slice(0, 60) || null }, ctx.user);
           pagado = ' · pagado';
         }
       }
-      return { accion: 'creado', detalle: `E-${e.folio} · ${partida.codigo} · ${pesosTxt(totalC)}${e.estado === 'por_aprobar' && !pagado ? ' · espera aprobación' : ''}${pagado}`, monto: totalC };
+      return { accion: 'creado', detalle: `E-${e.folio} · ${partida.codigo} · ${pesosTxt(total)}${e.estado === 'por_aprobar' && !pagado ? ' · espera aprobación' : ''}${pagado}`, monto: total };
     },
   },
 
@@ -287,8 +279,10 @@ const TIPOS = {
       if (d.clabe && !/^\d{18}$/.test(d.clabe)) fail(400, 'La CLABE debe tener 18 dígitos.');
       const p = (d.rfc && aux.proveedores.find(x => x.rfc === d.rfc)) || aux.proveedores.find(x => norm(x.nombre) === norm(d.nombre));
       if (p) {
-        ctx.db.prepare('UPDATE proveedores SET giro = COALESCE(?, giro), email = COALESCE(?, email), telefono = COALESCE(?, telefono), clabe_mask = COALESCE(?, clabe_mask), rfc = COALESCE(rfc, ?) WHERE id = ?')
-          .run(d.giro, d.email, d.telefono, mask(d.clabe), d.rfc, p.id);
+        const a = ctx.db.prepare('SELECT giro, email, telefono, clabe_mask, rfc FROM proveedores WHERE id = ?').get(p.id);
+        const n = { giro: d.giro ?? a.giro, email: d.email ?? a.email, telefono: d.telefono ?? a.telefono, clabe_mask: mask(d.clabe) ?? a.clabe_mask, rfc: a.rfc ?? d.rfc };
+        if (Object.keys(n).every(k => n[k] === a[k])) return { accion: 'omitido', detalle: `${p.nombre} · sin cambios` };
+        ctx.db.prepare('UPDATE proveedores SET giro = ?, email = ?, telefono = ?, clabe_mask = ?, rfc = ? WHERE id = ?').run(n.giro, n.email, n.telefono, n.clabe_mask, n.rfc, p.id);
         return { accion: 'actualizado', detalle: `${p.nombre} · datos de contacto actualizados` };
       }
       const id = Number(ctx.db.prepare('INSERT INTO proveedores (condominio_id, nombre, rfc, giro, email, telefono, clabe_mask, created_at) VALUES (?,?,?,?,?,?,?,?)')
@@ -482,9 +476,12 @@ export function importar(ctx, tipo, body, { perms, rolPuede, referenciaPago }) {
     const nombres = T.req.map(k => T.columnas[k][0]).join(', ');
     fail(400, `No se encontró el renglón de encabezados. Columnas obligatorias: ${nombres}. Descargue la plantilla para ver el formato.`);
   }
-  const datos = filas.slice(h + 1).map((arr, i) => ({ n: h + i + 2, r: Object.fromEntries(Object.entries(m.mapa).map(([k, j]) => [k, arr[j] ?? ''])) }))
+  // Las plantillas traen 3 filas de ejemplo marcadas «EJEMPLO · borre esta fila»: nunca se importan.
+  let ejemplos = 0;
+  const datos = filas.slice(h + 1).map((arr, i) => ({ n: h + i + 2, arr, r: Object.fromEntries(Object.entries(m.mapa).map(([k, j]) => [k, arr[j] ?? ''])) }))
+    .filter(x => { if (x.arr.some(c => esEjemplo(c))) { ejemplos++; return false; } return true; })
     .filter(x => Object.values(x.r).some(c => txt(c) !== '') && !T.vacia?.(x.r));
-  if (!datos.length) fail(400, 'El archivo no tiene filas con datos debajo de los encabezados.');
+  if (!datos.length) fail(400, ejemplos ? 'El archivo solo trae las filas de ejemplo: capture sus datos debajo de ellas (o sobre ellas, borrando la marca «EJEMPLO»).' : 'El archivo no tiene filas con datos debajo de los encabezados.');
   const db = ctx.db;
   const resultados = [];
   db.exec('BEGIN IMMEDIATE');
@@ -523,7 +520,7 @@ export function importar(ctx, tipo, body, { perms, rolPuede, referenciaPago }) {
       filas: resultados.length, validas: resultados.filter(r => r.ok && r.accion !== 'omitido').length, omitidas: resultados.filter(r => r.accion === 'omitido').length,
       errores: resultados.filter(r => !r.ok).length, creados: resultados.filter(r => r.accion === 'creado').length, actualizados: resultados.filter(r => r.accion === 'actualizado').length,
       total_cents: resultados.filter(r => r.ok && r.monto).reduce((a, r) => a + r.monto, 0),
-      partidas_nuevas: aux.creadas, proveedores_nuevos: aux.provNuevos || [],
+      partidas_nuevas: aux.creadas, proveedores_nuevos: aux.provNuevos || [], ejemplos,
     };
     const aplicar = b.aplicar && resumen.validas > 0;
     if (aplicar) {
@@ -555,5 +552,6 @@ export function catalogosPlantilla(db, cid) {
     bancos: c.bancos.map(b => ({ codigo: b.codigo, nombre: `${b.banco} ${b.nombre}`, numero: b.numero_mask, fondo: b.fondo, id: b.id })),
     partidas: c.partidas,
     proveedores: db.prepare('SELECT nombre, rfc, giro, email, telefono FROM proveedores WHERE condominio_id = ? AND activo = 1 ORDER BY nombre').all(cid),
+    fondos: db.prepare('SELECT nombre FROM fondos WHERE condominio_id = ? AND activo = 1 ORDER BY nombre').all(cid).map(f => f.nombre),
   };
 }
