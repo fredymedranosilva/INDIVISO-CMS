@@ -115,7 +115,7 @@ async function liquidacion(el, ctx, q, def, c) {
     const { escribirXlsx, guardarBlob } = await import('../xlsx.js');
     const filas = [['Unidad', 'Propietario', 'Adeudo previo', ...l.periodos.map(p => `${mesCorto(p)} emitido`), ...l.periodos.map(p => `${mesCorto(p)} pagado`), 'Emitido', 'Pagado', 'Bonificado', 'Saldo'],
       ...l.unidades.map(u => [u.clave, u.propietario || '', u.adeudo_previo / 100, ...l.periodos.map(p => (u.meses[p]?.emitido || 0) / 100), ...l.periodos.map(p => (u.meses[p]?.pagado || 0) / 100), u.emitido / 100, u.pagado / 100, u.bonificado / 100, u.saldo / 100])];
-    guardarBlob(escribirXlsx([{ nombre: `Liquidación ${ej}`, filas }]), `liquidacion-anual-${ej}.xlsx`);
+    await guardarBlob(escribirXlsx([{ nombre: `Liquidación ${ej}`, filas }]), `liquidacion-anual-${ej}.xlsx`);
   } });
   return html`<article class="doc wide-doc">${encabezado(c, `Liquidación anual ${ej}`, 'Emitido contra pagado por unidad')}${t}</article>`;
 }

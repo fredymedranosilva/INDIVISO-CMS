@@ -20,10 +20,21 @@
     if (path === '/api/auth/logout') return json({ ok: true });
     return json({ error: MSG, code: 'DEMO' }, 403);
   };
+  // Publicada en claude.ai la página no puede descargar por sí misma: entrega el archivo con la capacidad «downloads».
+  let dl = null;
+  window.__guardarArchivo = async (blob, nombre) => {
+    if (!window.claude || typeof window.claude.use !== 'function') return false;
+    dl = dl || window.claude.use('downloads');
+    const d = await dl;
+    if (!d) return false;
+    try { await d.save({ filename: nombre, data: blob }); }
+    catch (e) { if (e && e.code === 'declined') return true; throw new Error('No se pudo descargar el archivo (' + ((e && e.code) || 'error') + ').'); }
+    return true;
+  };
   addEventListener('DOMContentLoaded', () => {
     const b = document.createElement('div');
     b.textContent = 'Demostración · solo lectura · datos ficticios';
-    b.setAttribute('style', 'position:fixed;left:12px;bottom:12px;z-index:60;padding:6px 10px;border-radius:6px;background:#14241f;color:#f4f4f1;font:500 12px system-ui;opacity:.92;pointer-events:none');
+    b.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:60;padding:6px 10px;border-radius:6px;background:#14241f;color:#f4f4f1;font:500 12px system-ui;opacity:.92;pointer-events:none';
     document.body.appendChild(b);
   });
 })();

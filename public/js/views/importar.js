@@ -102,7 +102,7 @@ const DEF = {
 export async function descargarPlantilla(tipo, extra = {}) {
   const d = DEF[tipo], c = await capi('/importar/catalogos');
   const nombre = (S.condos.find(x => x.id === S.cid)?.nombre || 'condominio').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').toLowerCase();
-  guardarBlob(escribirXlsx(d.plantilla(c, extra)), `${d.archivo}-${nombre}.xlsx`);
+  await guardarBlob(escribirXlsx(d.plantilla(c, extra)), `${d.archivo}-${nombre}.xlsx`);
 }
 
 // abrirImportacion('pagos', { onOk, opciones: { presupuesto_id }, extra })

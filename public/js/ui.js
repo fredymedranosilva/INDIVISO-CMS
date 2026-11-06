@@ -71,7 +71,9 @@ export const capi = (path, opts) => api(`/api/c/${S.cid}${path}`, opts);
 export async function descargar(path, nombre) {
   const r = await fetch(path, { credentials: 'same-origin' });
   if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'No se pudo descargar.'); }
-  const url = URL.createObjectURL(await r.blob());
+  const blob = await r.blob();
+  if (window.__guardarArchivo && await window.__guardarArchivo(blob, nombre)) return;
+  const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);

@@ -298,7 +298,7 @@ export function bonificar(db, cid, cargoId, monto, motivo, user, fechaAplica = n
     lineas: [
       { cuenta: cuenta(db, cid, 'BONIF'), debe: monto - resPart, concepto: motivo },
       { cuenta: c.fondo_cuenta_id || cuenta(db, cid, 'FONDO_RESERVA'), debe: resPart, concepto: motivo },
-      { cuenta: cuenta(db, cid, 'CXC'), unidad: c.unidad_id, haber: monto, concepto: `Bonificación: ${c.concepto}` },
+      { cuenta: cuenta(db, cid, 'CXC'), unidad: c.unidad_id, haber: monto, concepto: `${motivo === MOTIVO_PRONTO_PAGO ? MOTIVO_PRONTO_PAGO : 'Bonificación'}: ${c.concepto}` },
     ],
   }, user);
   insAplic(db, cid, { cargo_id: c.id, tipo: 'bonificacion', monto, motivo, poliza_id: pid }, user);
