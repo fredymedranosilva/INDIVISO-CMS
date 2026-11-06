@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const ROOT = join(import.meta.dirname, '..');
 const OUT = join(ROOT, 'docs');
 const BASE = process.env.BASE || 'http://127.0.0.1:4300';
-const creds = Object.fromEntries(readFileSync(join(ROOT, 'data/credenciales-demo.txt'), 'utf8').split('\n').filter(l => l.includes('@')).map(l => { const p = l.trim().split(/\s+/); return [p[p.length - 2], p[p.length - 1]]; }));
+const creds = Object.fromEntries(readFileSync(join(process.env.INDIVISO_DATA || join(ROOT, 'data'), 'credenciales-demo.txt'), 'utf8').split('\n').filter(l => l.includes('@')).map(l => { const p = l.trim().split(/\s+/); return [p[p.length - 2], p[p.length - 1]]; }));
 
 const pad = n => String(n).padStart(2, '0');
 const d = new Date();
@@ -47,6 +47,7 @@ for (const c of me.condominios) {
   for (const q of [`desde=${addM(P, -2)}-01&hasta=${H}`, `estado=por_aprobar`, `estado=aprobado&desde=${addM(P, -2)}-01&hasta=${H}`]) await g(`${b}/egresos?${q}`);
   for (const r of ['proveedores', 'emisiones', 'config', 'convenios', 'cuentas', 'presupuestos', 'periodos', 'integridad', 'usuarios', 'personas']) await g(`${b}/${r}`);
   await g(`${b}/auditoria?limit=200`);
+  await g(`${b}/importar/catalogos`); // plantillas de Excel descargables también en la demo
   const bancos = await g(`${b}/bancos`);
   for (const k of bancos) {
     await g(`${b}/bancos/${k.id}/movimientos?estado=pendientes`);

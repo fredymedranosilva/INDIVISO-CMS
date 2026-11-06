@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { join, normalize, extname, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { openDb } from './db.mjs';
-import { AppError } from './util.mjs';
+import { AppError, dbError } from './util.mjs';
 import { authRoutes, loadSession, checkCsrf, checkOrigin } from './auth.mjs';
 import { apiRoutes, resolverCondominio } from './api.mjs';
 import { programarRespaldos } from './backup.mjs';
@@ -54,17 +54,6 @@ async function readBody(req, limit) {
   if (!size) return {};
   if (!String(req.headers['content-type'] || '').startsWith('application/json')) throw new AppError(415, 'Se esperaba JSON.');
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new AppError(400, 'JSON inválido.'); }
-}
-
-// Traduce errores de la base (restricciones, triggers) a mensajes claros sin filtrar internos.
-function dbError(e) {
-  const m = String(e.message || '');
-  if (m.includes('INMUTABLE')) return new AppError(409, m.slice(m.indexOf('INMUTABLE') + 11) || 'Registro inmutable.', 'INMUTABLE');
-  if (m.includes('PERIODO_CERRADO')) return new AppError(409, 'El periodo contable está cerrado; el movimiento no puede registrarse en esa fecha.', 'PERIODO_CERRADO');
-  if (m.includes('UNIQUE constraint failed')) return new AppError(409, 'El registro ya existe (se evitó un duplicado).', 'DUPLICADO');
-  if (m.includes('CHECK constraint failed')) return new AppError(400, 'Los datos no cumplen las reglas de validación.', 'VALIDACION');
-  if (m.includes('FOREIGN KEY constraint failed')) return new AppError(400, 'Referencia a un registro inexistente.', 'REFERENCIA');
-  return null;
 }
 
 async function api(req, res, url) {

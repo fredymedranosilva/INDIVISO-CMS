@@ -4,6 +4,17 @@ export class AppError extends Error {
 }
 export const fail = (status, msg, code) => { throw new AppError(status, msg, code); };
 
+// Traduce errores de la base (restricciones, triggers) a mensajes claros sin filtrar internos.
+export function dbError(e) {
+  const m = String(e.message || '');
+  if (m.includes('INMUTABLE')) return new AppError(409, m.slice(m.indexOf('INMUTABLE') + 11) || 'Registro inmutable.', 'INMUTABLE');
+  if (m.includes('PERIODO_CERRADO')) return new AppError(409, 'El periodo contable está cerrado; el movimiento no puede registrarse en esa fecha.', 'PERIODO_CERRADO');
+  if (m.includes('UNIQUE constraint failed')) return new AppError(409, 'El registro ya existe (se evitó un duplicado).', 'DUPLICADO');
+  if (m.includes('CHECK constraint failed')) return new AppError(400, 'Los datos no cumplen las reglas de validación.', 'VALIDACION');
+  if (m.includes('FOREIGN KEY constraint failed')) return new AppError(400, 'Referencia a un registro inexistente.', 'REFERENCIA');
+  return null;
+}
+
 const pad = n => String(n).padStart(2, '0');
 export const hoy = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 export const periodoDe = fecha => fecha.slice(0, 7);

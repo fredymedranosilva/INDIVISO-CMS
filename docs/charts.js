@@ -33,7 +33,7 @@
   const NS = 'http://www.w3.org/2000/svg', MINUS = '\u2212', ROW = 14, LANE = (rows) => 8 + rows * ROW + (rows ? 4 : 0);
   const css = (el, name, fb) => getComputedStyle(el).getPropertyValue(name).trim() || fb;
   const cssNum = (el, name, fb) => { const v = parseFloat(css(el, name, '')); return Number.isFinite(v) ? v : fb; };
-  const svg = (tag, attrs = {}, parent) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v); if (parent) parent.appendChild(n); return n; };
+  const svg = (tag, attrs = {}, parent) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) if (v != null) { if (k === 'style') n.style.cssText = v; else n.setAttribute(k, v); } if (parent) parent.appendChild(n); return n; };
   const text = (parent, str, attrs) => { const t = svg('text', attrs, parent); t.textContent = str; return t; };
   const titled = (parent, str) => { svg('title', {}, parent).textContent = str; return parent; };
   // numbers follow the page's language (<html lang>), so separators match the rest of the screen
@@ -231,10 +231,10 @@
     if (st.edge) svg('rect', { x, y, width: 3, height: h, rx: Math.min(r, 1.5), fill: st.edge }, parent);
     return n;
   }
+  // Estilos de la leyenda en css/app.css: la CSP (style-src 'self') bloquea <style> insertado por JS.
   const legendCss = ':where(.chart-legend){list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;line-height:16px;color:var(--muted,#5f6368)}:where(.chart-legend li){display:inline-flex;align-items:center;gap:6px;white-space:nowrap}:where(.chart-legend svg){flex:none;overflow:visible}@media (max-width:480px){:where(.chart-legend){display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}}';
   function legendEl(items, target) {
-    if (!document.getElementById('charts-legend-css')) { const st = document.createElement('style'); st.id = 'charts-legend-css'; st.textContent = legendCss; document.head.appendChild(st); }
-    const ul = document.createElement('ul'); ul.className = 'chart-legend';
+        const ul = document.createElement('ul'); ul.className = 'chart-legend';
     for (const it of items) {
       const li = document.createElement('li'), sw = svg('svg', { width: it.w || 14, height: 12, 'aria-hidden': 'true' });
       it.draw(sw); li.append(sw, document.createTextNode(it.label)); ul.appendChild(li);

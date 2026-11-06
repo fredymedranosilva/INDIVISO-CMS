@@ -38,7 +38,7 @@ export function carteraUnidades(db, cid, corte = hoy()) {
   const unidades = db.prepare(`SELECT u.*, (SELECT GROUP_CONCAT(p.nombre, ', ') FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id AND up.rol = 'propietario') AS propietario,
       (SELECT p.email FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id ORDER BY up.rol = 'responsable' DESC, up.rol = 'propietario' DESC LIMIT 1) AS email,
       (SELECT p.telefono FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id ORDER BY up.rol = 'responsable' DESC, up.rol = 'propietario' DESC LIMIT 1) AS telefono,
-      (SELECT MAX(fecha) FROM pagos WHERE unidad_id = u.id AND estado = 'aplicado') AS ultimo_pago
+      (SELECT MAX(fecha) FROM pagos WHERE unidad_id = u.id AND estado = 'aplicado' AND idem_key NOT LIKE 'INI-%') AS ultimo_pago
     FROM unidades u WHERE u.condominio_id = ? ORDER BY u.torre, u.clave`).all(cid);
   const abiertos = db.prepare(`SELECT c.unidad_id, c.tipo, c.vencimiento, ${SALDO_CARGO} AS saldo FROM cargos c WHERE c.condominio_id = ? AND c.cancelado_at IS NULL AND c.fecha <= ?`).all(cid, corte);
   const favor = db.prepare(`SELECT p.unidad_id, SUM(p.monto_cents - COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a WHERE a.pago_id = p.id AND a.revertida = 0), 0)) AS s
@@ -204,7 +204,7 @@ export function cobranzaMensual(db, cid, desdeP, hastaP) {
     const emitido = db.prepare("SELECT COALESCE(SUM(monto_cents), 0) s FROM cargos WHERE condominio_id = ? AND periodo = ? AND tipo IN ('ordinaria','extraordinaria') AND cancelado_at IS NULL").get(cid, p).s;
     const cobradoDelMes = db.prepare(`SELECT COALESCE(SUM(a.monto_cents), 0) s FROM aplicaciones a JOIN cargos c ON c.id = a.cargo_id
       WHERE c.condominio_id = ? AND c.periodo = ? AND c.tipo IN ('ordinaria','extraordinaria') AND c.cancelado_at IS NULL AND a.revertida = 0`).get(cid, p).s;
-    const recaudado = db.prepare("SELECT COALESCE(SUM(monto_cents), 0) s FROM pagos WHERE condominio_id = ? AND estado = 'aplicado' AND substr(fecha, 1, 7) = ?").get(cid, p).s;
+    const recaudado = db.prepare("SELECT COALESCE(SUM(monto_cents), 0) s FROM pagos WHERE condominio_id = ? AND estado = 'aplicado' AND idem_key NOT LIKE 'INI-%' AND substr(fecha, 1, 7) = ?").get(cid, p).s;
     return { periodo: p, emitido, cobrado: cobradoDelMes, recaudado, indice: emitido ? cobradoDelMes / emitido : null };
   });
 }

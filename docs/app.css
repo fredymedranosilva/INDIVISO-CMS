@@ -255,7 +255,10 @@ a.row-link { display: flex; color: inherit; border-radius: 4px; transition: back
 .chart-head h3 { font-size: var(--fs-body); font-weight: 500; }
 .chart-tip { box-shadow: 0 6px 20px -8px rgb(20 36 31 / 0.25); }
 .chart-tip .tip-k { opacity: 0.7; }
-.chart-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.chart-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; line-height: 16px; color: var(--muted); }
+.chart-legend li { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chart-legend svg { flex: none; overflow: visible; }
+@media (max-width: 480px) { .chart-legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .hbars { display: grid; gap: 10px; }
 .hbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; font-size: 13px; }
 .hbar .meter { grid-column: 1 / -1; }
@@ -376,3 +379,18 @@ a.row-link { display: flex; color: inherit; border-radius: 4px; transition: back
 @media (max-width: 900px) { .set-row { grid-template-columns: 1fr; gap: 14px; } }
 
 #view:focus { outline: none; }
+
+/* Importación desde Excel */
+.imp-pasos { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--raised); }
+.imp-paso { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.imp-paso > b { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--primary); color: var(--primary-ink); font-size: 12px; }
+.imp-paso > span { flex: 1 1 220px; }
+.imp-paso .grow { flex: 1 1 200px; min-width: 0; }
+.imp-pegar summary { cursor: pointer; color: var(--muted); font-size: var(--fs-small); }
+.imp-pegar textarea { margin-top: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.imp-resumen { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.imp-resumen > div { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
+.imp-resumen span { display: block; font-size: var(--fs-small); color: var(--muted); }
+.imp-resumen b { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.imp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.dlg-body h3 { font-size: var(--fs-body); font-weight: 600; }

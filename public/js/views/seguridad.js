@@ -5,11 +5,12 @@ const ROLES = { admin: 'Administración', contador: 'Contabilidad', comite: 'Com
 const DESC_ROL = { admin: 'Todo, incluidos usuarios, cancelaciones y cierres.', contador: 'Captura cobros, egresos, conciliación y pólizas. No aprueba egresos ni cancela.', comite: 'Consulta todo, aprueba egresos y revisa la bitácora. No captura.', residente: 'Solo su estado de cuenta, sus recibos y reportar pagos.' };
 
 export async function render(el, ctx) {
-  const sub = (ctx.params[0] || 'cuenta').split('?')[0];
+  const pedida = (ctx.params[0] || 'cuenta').split('?')[0];
   const items = [['cuenta', 'Mi cuenta']];
   if (puede('usuarios')) items.push(['usuarios', 'Usuarios y roles']);
   if (puede('auditoria')) items.push(['bitacora', 'Bitácora']);
   if (S.me.superadmin) items.push(['respaldos', 'Respaldos']);
+  const sub = items.some(([k]) => k === pedida) ? pedida : 'cuenta'; // una pestaña sin permiso no se abre por URL
   mount(el, html`<div class="title-row"><div><h1>Seguridad</h1><p class="sub">Contraseñas con scrypt, verificación en dos pasos, sesiones de servidor con expiración, permisos por rol en cada operación y bitácora encadenada por hash.</p></div></div>
     ${tabs(items, sub, ctx.base)}<div id="sg-body"></div>`);
   const body = $('#sg-body', el); cargando(body);

@@ -2,6 +2,7 @@
 import { S, capi, html, raw, mount, $, pesos, fecha, hoy, addMonths, periodoActual, puede, tabla, m, pill, ESTADO_EGRESO, toast, dialogo, val, pesosDe, centsToInput, idem, descargar, cargando, tabs, leerArchivo, confirmar } from '../ui.js';
 import { bancos, subirArchivo, pedirMotivo } from './comun.js';
 import { refrescarContadores } from '../app.js';
+import { abrirImportacion } from './importar.js';
 
 export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'egresos').split('?');
@@ -9,9 +10,9 @@ export async function render(el, ctx) {
   cargando(el);
   const [t, c] = await Promise.all([capi('/tablero'), capi('/config')]);
   mount(el, html`<div class="title-row"><div><h1>Egresos</h1><p class="sub">Todo egreso de ${pesos(c.umbral_aprobacion_cents)} o más, y todo uso del fondo de reserva, requiere aprobación de un usuario distinto a quien lo capturó.</p></div>
-    <div class="actions">${puede('capturar') ? html`<button class="btn primary" data-action="nuevo">Capturar egreso</button>` : ''}</div></div>
+    <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarEgresos">Importar desde Excel</button><button class="btn primary" data-action="nuevo">Capturar egreso</button>` : ''}</div></div>
     ${tabs([['egresos', 'Egresos'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
-  ctx.acciones({ nuevo: () => capturar(ctx) });
+  ctx.acciones({ nuevo: () => capturar(ctx), importarEgresos: () => abrirImportacion('egresos', { onOk: () => ctx.recargar() }) });
   const body = $('#eg-body', el);
   if (sub === 'proveedores') return proveedores(body, ctx);
   return lista(body, ctx, sub === 'aprobar' ? { estado: 'por_aprobar' } : { estado: q.get('estado') || '', desde: q.get('desde') || `${addMonths(periodoActual(), -2)}-01`, hasta: q.get('hasta') || hoy() }, sub === 'aprobar');
@@ -120,11 +121,12 @@ async function capturar(ctx) {
 
 async function proveedores(el, ctx) {
   const rows = await capi('/proveedores');
-  mount(el, html`<div class="filters"><span class="spacer"></span>${puede('capturar') ? html`<button class="btn" data-action="nuevoProv">Nuevo proveedor</button>` : ''}</div>
+  mount(el, html`<div class="filters"><span class="spacer"></span>${puede('capturar') ? html`<button class="btn" data-action="importarProv">Importar desde Excel</button><button class="btn" data-action="nuevoProv">Nuevo proveedor</button>` : ''}</div>
     <section class="panel flush"><header><h2>${rows.length} proveedores</h2><span class="meta">El RFC es único: no se pueden duplicar proveedores.</span></header>
     ${tabla([{ t: 'Proveedor', k: p => html`<b>${p.nombre}</b><span class="sub-t">${p.giro || ''}</span>` }, { t: 'RFC', k: p => p.rfc || '—' }, { t: 'Contacto', k: p => [p.email, p.telefono].filter(Boolean).join(' · ') || html`<span class="faint">—</span>`, cls: 'hide-m' },
       { t: 'CLABE', k: p => p.clabe_mask || html`<span class="faint">—</span>`, cls: 'hide-m' }, { t: `Ejercido ${hoy().slice(0, 4)}`, num: true, k: p => m(p.ejercido_anio) }, { t: '', k: p => p.activo ? '' : pill(['Inactivo', 'neutral']) }], rows)}</section>`);
   ctx.acciones({
+    importarProv: () => abrirImportacion('proveedores', { onOk: () => ctx.recargar() }),
     nuevoProv: () => dialogo({
       titulo: 'Nuevo proveedor', cuerpo: html`<div class="form-grid">
         <label class="field full"><span>Razón social</span><input name="nombre" required maxlength="160"></label>
