@@ -129,8 +129,8 @@ export function cargosAbiertos(db, unidadId) {
     ORDER BY c.vencimiento, CASE c.tipo WHEN 'recargo' THEN 0 ELSE 1 END, c.id`).all(unidadId);
 }
 export function creditosDisponibles(db, unidadId) {
-  return db.prepare(`SELECT p.id, p.fecha, p.monto_cents - COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a WHERE a.pago_id = p.id AND a.revertida = 0), 0) AS libre
-    FROM pagos p WHERE p.unidad_id = ? AND p.estado = 'aplicado' ORDER BY p.fecha, p.id`).all(unidadId).filter(r => r.libre > 0);
+  return db.prepare(`SELECT p.id, p.fecha, pol.fecha AS fecha_contable, p.monto_cents - COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a WHERE a.pago_id = p.id AND a.revertida = 0), 0) AS libre
+    FROM pagos p LEFT JOIN polizas pol ON pol.id = p.poliza_id WHERE p.unidad_id = ? AND p.estado = 'aplicado' ORDER BY p.fecha, p.id`).all(unidadId).filter(r => r.libre > 0);
 }
 
 // Prelación: lo más antiguo primero; a igual vencimiento, recargos antes que cuotas.
@@ -157,7 +157,7 @@ export function aplicarSaldoFavor(db, cid, unidadId, fecha, user) {
   for (const cr of creditos) {
     const { plan } = planAplicacion(abiertos, cr.libre);
     for (const p of plan) {
-      pares.push({ ...p, pago_id: cr.id });
+      pares.push({ ...p, pago_id: cr.id, fecha_credito: cr.fecha_contable || cr.fecha });
       const c = abiertos.find(x => x.id === p.cargo_id); c.saldo_cents -= p.monto;
     }
     abiertos = abiertos.filter(c => c.saldo_cents > 0);
@@ -166,14 +166,16 @@ export function aplicarSaldoFavor(db, cid, unidadId, fecha, user) {
   const total = pares.reduce((a, p) => a + p.monto, 0);
   if (!total) return 0;
   const u = unidadDe(db, cid, unidadId);
+  // Un saldo a favor no puede aplicarse antes de existir: la aplicación lleva la fecha más reciente entre el cargo y los pagos que la cubren.
+  const fechaAplic = fechaContable(db, cid, pares.reduce((f, p) => p.fecha_credito > f ? p.fecha_credito : f, fecha));
   const pid = crearPoliza(db, cid, {
-    tipo: 'D', fecha, concepto: `Aplicación de saldo a favor · ${u.clave}`, origen: 'aplicacion_anticipo', origen_id: unidadId,
+    tipo: 'D', fecha: fechaAplic, concepto: `Aplicación de saldo a favor · ${u.clave}`, origen: 'aplicacion_anticipo', origen_id: unidadId,
     lineas: [
       { cuenta: cuenta(db, cid, 'ANTICIPOS'), unidad: unidadId, debe: total, concepto: 'Aplicación de saldo a favor' },
       { cuenta: cuenta(db, cid, 'CXC'), unidad: unidadId, haber: total, concepto: 'Aplicación de saldo a favor' },
     ],
   }, user);
-  for (const p of pares) insAplic(db, cid, { ...p, tipo: 'pago', poliza_id: pid }, user);
+  for (const p of pares) insAplic(db, cid, { cargo_id: p.cargo_id, monto: p.monto, pago_id: p.pago_id, tipo: 'pago', poliza_id: pid }, user);
   return total;
 }
 
@@ -723,12 +725,19 @@ export function checklistCierre(db, cid, periodo) {
   };
 }
 
-export function cerrarPeriodo(db, cid, periodo, user) {
+// Condiciones para cerrar un mes (se revisan antes de crear el respaldo previo y otra vez al cerrar).
+export function validarCierre(db, cid, periodo) {
+  if (periodo >= periodoDe(hoy())) fail(409, 'No se puede cerrar el periodo en curso.');
+  if (db.prepare("SELECT 1 FROM periodos WHERE condominio_id = ? AND periodo = ? AND estado = 'cerrado'").get(cid, periodo)) fail(409, 'El periodo ya está cerrado.');
   const ck = checklistCierre(db, cid, periodo);
   if (ck.anteriores_abiertos) fail(409, 'Cierre primero los periodos anteriores.');
   if (ck.pagos_por_validar) fail(409, `Hay ${ck.pagos_por_validar} pagos reportados sin validar hasta este periodo.`);
   if (ck.egresos_por_aprobar) fail(409, `Hay ${ck.egresos_por_aprobar} egresos pendientes de aprobación hasta este periodo.`);
-  if (periodo >= periodoDe(hoy())) fail(409, 'No se puede cerrar el periodo en curso.');
+  return ck;
+}
+
+export function cerrarPeriodo(db, cid, periodo, user) {
+  const ck = validarCierre(db, cid, periodo);
   db.prepare("INSERT INTO periodos (condominio_id, periodo, estado, cerrado_por, cerrado_at) VALUES (?, ?, 'cerrado', ?, ?) ON CONFLICT (condominio_id, periodo) DO UPDATE SET estado = 'cerrado', cerrado_por = excluded.cerrado_por, cerrado_at = excluded.cerrado_at")
     .run(cid, periodo, user?.id ?? null, Date.now());
   return ck;

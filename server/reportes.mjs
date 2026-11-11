@@ -34,20 +34,34 @@ export function saldoCuentaClave(db, cid, clave, hastaP = '9999-12') {
 }
 
 // ---------- Cartera y morosidad ----------
+// Saldos al corte: cada cargo menos las aplicaciones asentadas hasta esa fecha. Una aplicación revertida cuenta
+// mientras su pago no se había cancelado, y un cargo cancelado cuenta hasta el día de su cancelación.
+// Así la cartera a cualquier fecha cuadra con el libro contable a esa misma fecha.
+const APLICADO_AL = `COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a JOIN polizas ap ON ap.id = a.poliza_id LEFT JOIN pagos pg ON pg.id = a.pago_id LEFT JOIN polizas cpg ON cpg.id = pg.cancel_poliza_id
+  WHERE a.cargo_id = c.id AND ap.fecha <= ? AND (a.revertida = 0 OR cpg.fecha > ?)), 0)`;
+function cargosAlCorte(db, cid, corte) {
+  return db.prepare(`SELECT c.id, c.unidad_id, c.tipo, c.concepto, c.periodo, c.vencimiento, c.monto_cents, c.monto_cents - ${APLICADO_AL} AS saldo
+    FROM cargos c LEFT JOIN polizas xp ON xp.id = c.cancel_poliza_id
+    WHERE c.condominio_id = ? AND c.fecha <= ? AND (c.cancelado_at IS NULL OR xp.fecha > ?) ORDER BY c.vencimiento, c.id`).all(corte, corte, cid, corte, corte).filter(c => c.saldo > 0);
+}
+
 export function carteraUnidades(db, cid, corte = hoy()) {
   const unidades = db.prepare(`SELECT u.*, (SELECT GROUP_CONCAT(p.nombre, ', ') FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id AND up.rol = 'propietario') AS propietario,
       (SELECT p.email FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id ORDER BY up.rol = 'responsable' DESC, up.rol = 'propietario' DESC LIMIT 1) AS email,
       (SELECT p.telefono FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id ORDER BY up.rol = 'responsable' DESC, up.rol = 'propietario' DESC LIMIT 1) AS telefono,
-      (SELECT MAX(fecha) FROM pagos WHERE unidad_id = u.id AND estado = 'aplicado' AND idem_key NOT LIKE 'INI-%') AS ultimo_pago
-    FROM unidades u WHERE u.condominio_id = ? ORDER BY u.torre, u.clave`).all(cid);
-  const abiertos = db.prepare(`SELECT c.unidad_id, c.tipo, c.vencimiento, ${SALDO_CARGO} AS saldo FROM cargos c WHERE c.condominio_id = ? AND c.cancelado_at IS NULL AND c.fecha <= ?`).all(cid, corte);
-  const favor = db.prepare(`SELECT p.unidad_id, SUM(p.monto_cents - COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a WHERE a.pago_id = p.id AND a.revertida = 0), 0)) AS s
-    FROM pagos p WHERE p.condominio_id = ? AND p.estado = 'aplicado' GROUP BY p.unidad_id`).all(cid);
+      (SELECT MAX(fecha) FROM pagos WHERE unidad_id = u.id AND estado = 'aplicado' AND idem_key NOT LIKE 'INI-%' AND fecha <= ?) AS ultimo_pago
+    FROM unidades u WHERE u.condominio_id = ? ORDER BY u.torre, u.clave`).all(corte, cid);
+  const abiertos = cargosAlCorte(db, cid, corte);
+  // Saldo a favor al corte: lo pagado menos lo aplicado, hasta esa fecha, a cargos que ya existían entonces
+  // (un pago capturado después puede haberse aplicado a cuotas emitidas más tarde).
+  const favor = db.prepare(`SELECT p.unidad_id, SUM(p.monto_cents - COALESCE((SELECT SUM(a.monto_cents) FROM aplicaciones a JOIN polizas ap ON ap.id = a.poliza_id JOIN cargos cg ON cg.id = a.cargo_id
+        WHERE a.pago_id = p.id AND ap.fecha <= ? AND cg.fecha <= ? AND (a.revertida = 0 OR cp.fecha > ?)), 0)) AS s
+    FROM pagos p JOIN polizas pp ON pp.id = p.poliza_id LEFT JOIN polizas cp ON cp.id = p.cancel_poliza_id
+    WHERE p.condominio_id = ? AND p.estado IN ('aplicado','cancelado') AND pp.fecha <= ? AND (p.estado = 'aplicado' OR cp.fecha > ?) GROUP BY p.unidad_id`).all(corte, corte, corte, cid, corte, corte);
   const fav = new Map(favor.map(f => [f.unidad_id, f.s]));
   const conv = new Map(db.prepare("SELECT * FROM convenios WHERE condominio_id = ? AND estado = 'vigente'").all(cid).map(c => [c.unidad_id, c]));
   const map = new Map(unidades.map(u => [u.id, { ...u, por_vencer: 0, d30: 0, d60: 0, d90: 0, d90mas: 0, vencido: 0, adeudo: 0, recargos: 0, meses: 0, saldo_favor: fav.get(u.id) || 0, convenio: conv.get(u.id) || null, dias_max: 0 }]));
   for (const c of abiertos) {
-    if (c.saldo <= 0) continue;
     const u = map.get(c.unidad_id); if (!u) continue;
     const dias = diffDays(corte, c.vencimiento);
     u.adeudo += c.saldo;
@@ -60,6 +74,22 @@ export function carteraUnidades(db, cid, corte = hoy()) {
     }
   }
   return [...map.values()].map(u => ({ ...u, saldo_neto: u.adeudo - u.saldo_favor, convenio: u.convenio ? { id: u.convenio.id, ...estadoConvenio(db, u.convenio) } : null }));
+}
+
+// Detalle de los cargos abiertos al corte (para el reporte de morosidad y los avisos de cobro).
+export function carteraDetalle(db, cid, corte = hoy()) {
+  const clave = new Map(db.prepare('SELECT id, clave FROM unidades WHERE condominio_id = ?').all(cid).map(u => [u.id, u.clave]));
+  return cargosAlCorte(db, cid, corte).map(c => ({ unidad_id: c.unidad_id, clave: clave.get(c.unidad_id), tipo: c.tipo, concepto: c.concepto, periodo: c.periodo, vencimiento: c.vencimiento,
+    dias: Math.max(0, diffDays(corte, c.vencimiento)), monto_cents: c.monto_cents, saldo_cents: c.saldo }));
+}
+
+// Cartera vencida al cierre de cada uno de los últimos meses (tendencia de morosidad).
+export function tendenciaMorosidad(db, cid, hastaP, n = 12) {
+  return meses(addMonths(hastaP, -(n - 1)), hastaP).map(p => {
+    const corte = finDeMes(p) < hoy() ? finDeMes(p) : hoy();
+    const r = resumenCartera(carteraUnidades(db, cid, corte));
+    return { periodo: p, corte, vencido: r.vencido, por_vencer: r.por_vencer, morosas: r.morosas, unidades: r.unidades, pct_morosidad: r.pct_morosidad };
+  });
 }
 
 export function resumenCartera(rows) {
@@ -241,13 +271,21 @@ export function fondoReserva(db, cid, desdeP, hastaP) {
   return { inicial: ini, aportaciones: r.a, aplicaciones: r.u, final: ini + r.a - r.u, usos };
 }
 
+// Cobrado neto de un periodo por su fecha contable: lo recibido menos los recibos cancelados en ese mismo periodo.
+// Es el mismo importe que entra a bancos y caja por cobranza según el libro.
+const PAGOS_PERIODO = `FROM pagos p JOIN polizas pol ON pol.id = p.poliza_id LEFT JOIN polizas cp ON cp.id = p.cancel_poliza_id
+  WHERE p.condominio_id = ? AND p.idem_key NOT LIKE 'INI-%' AND p.estado IN ('aplicado','cancelado')`;
+export function cobradoNeto(db, cid, desde, hasta) {
+  return db.prepare(`SELECT COALESCE(SUM(CASE WHEN pol.fecha BETWEEN ? AND ? THEN p.monto_cents ELSE 0 END), 0) - COALESCE(SUM(CASE WHEN p.estado = 'cancelado' AND cp.fecha BETWEEN ? AND ? THEN p.monto_cents ELSE 0 END), 0) AS s
+    ${PAGOS_PERIODO}`).get(desde, hasta, desde, hasta, cid).s;
+}
+
 export function cobranzaMensual(db, cid, desdeP, hastaP) {
   return meses(desdeP, hastaP).map(p => {
     const emitido = db.prepare("SELECT COALESCE(SUM(monto_cents), 0) s FROM cargos WHERE condominio_id = ? AND periodo = ? AND tipo IN ('ordinaria','extraordinaria') AND cancelado_at IS NULL").get(cid, p).s;
     const cobradoDelMes = db.prepare(`SELECT COALESCE(SUM(a.monto_cents), 0) s FROM aplicaciones a JOIN cargos c ON c.id = a.cargo_id
       WHERE c.condominio_id = ? AND c.periodo = ? AND c.tipo IN ('ordinaria','extraordinaria') AND c.cancelado_at IS NULL AND a.revertida = 0`).get(cid, p).s;
-    const recaudado = db.prepare("SELECT COALESCE(SUM(monto_cents), 0) s FROM pagos WHERE condominio_id = ? AND estado = 'aplicado' AND idem_key NOT LIKE 'INI-%' AND substr(fecha, 1, 7) = ?").get(cid, p).s;
-    return { periodo: p, emitido, cobrado: cobradoDelMes, recaudado, indice: emitido ? cobradoDelMes / emitido : null };
+    return { periodo: p, emitido, cobrado: cobradoDelMes, recaudado: cobradoNeto(db, cid, `${p}-01`, finDeMes(p)), indice: emitido ? cobradoDelMes / emitido : null };
   });
 }
 
@@ -419,26 +457,74 @@ function agrupar(nombres) {
 
 const clasifDe = grupos => Object.fromEntries(grupos.flatMap(g => g.clasificaciones.map(c => [`${g.clave}|${c.nombre}`, c.total])));
 
-export function ingresos(db, cid, desde, hasta) {
-  const pagos = db.prepare(`SELECT COUNT(*) n, COALESCE(SUM(monto_cents), 0) s FROM pagos WHERE condominio_id = ? AND estado = 'aplicado' AND idem_key NOT LIKE 'INI-%' AND fecha BETWEEN ? AND ?`).get(cid, desde, hasta);
-  const apl = db.prepare(`SELECT c.tipo, c.concepto, k.codigo, k.nombre, SUM(a.monto_cents) monto FROM aplicaciones a JOIN pagos p ON p.id = a.pago_id JOIN cargos c ON c.id = a.cargo_id JOIN cuentas k ON k.id = c.cuenta_ingreso_id
-    WHERE p.condominio_id = ? AND p.estado = 'aplicado' AND p.idem_key NOT LIKE 'INI-%' AND p.fecha BETWEEN ? AND ? AND a.tipo = 'pago' AND a.revertida = 0
-    GROUP BY c.tipo, c.concepto, k.id ORDER BY k.codigo, MIN(c.periodo), c.concepto`).all(cid, desde, hasta);
+const METODO_NOMBRE = { transferencia: 'Transferencia', deposito: 'Depósito', efectivo: 'Efectivo', tarjeta: 'Tarjeta', cheque: 'Cheque', domiciliacion: 'Domiciliación' };
+// Periodo inmediato anterior de la misma duración (mes contra mes, año contra año).
+function periodoAnterior(desde, hasta) {
+  const mesCompleto = desde.endsWith('-01') && hasta === finDeMes(hasta.slice(0, 7));
+  if (mesCompleto) {
+    const n = (+hasta.slice(0, 4) - +desde.slice(0, 4)) * 12 + (+hasta.slice(5, 7) - +desde.slice(5, 7)) + 1;
+    return { desde: `${addMonths(desde.slice(0, 7), -n)}-01`, hasta: finDeMes(addMonths(hasta.slice(0, 7), -n)) };
+  }
+  const dias = diffDays(hasta, desde) + 1;
+  return { desde: addDays(desde, -dias), hasta: addDays(desde, -1) };
+}
+const acumular = (map, k, base, monto) => { const x = map.get(k) || { ...base, n: 0, monto: 0 }; x.n += 1; x.monto += monto; map.set(k, x); };
+
+// Ingresos del periodo (flujo de efectivo): cada cobro cuenta en su fecha contable y un recibo cancelado resta en el periodo
+// en que se canceló, de modo que el total cuadra con las entradas a bancos y caja y un mes cerrado nunca cambia.
+export function ingresos(db, cid, desde, hasta, { detalle = true } = {}) {
+  const pagos = db.prepare(`SELECT p.id, p.folio, p.fecha, p.monto_cents, p.estado, p.metodo, p.referencia, p.unidad_id, pol.fecha AS f, cp.fecha AS fc, u.clave, b.banco, b.nombre AS cuenta,
+      (SELECT GROUP_CONCAT(pe.nombre, ', ') FROM unidad_personas up JOIN personas pe ON pe.id = up.persona_id WHERE up.unidad_id = u.id AND up.rol = 'propietario') AS propietario
+    ${PAGOS_PERIODO.replace('WHERE', 'JOIN unidades u ON u.id = p.unidad_id LEFT JOIN cuentas_banco b ON b.id = p.cuenta_banco_id WHERE')} AND ((pol.fecha BETWEEN ? AND ?) OR (cp.fecha BETWEEN ? AND ?)) ORDER BY pol.fecha, p.folio`).all(cid, desde, hasta, desde, hasta);
+  const dentro = f => f != null && f >= desde && f <= hasta;
+  const signo = new Map(pagos.map(p => [p.id, (dentro(p.f) ? 1 : 0) - (p.estado === 'cancelado' && dentro(p.fc) ? 1 : 0)]));
+  // A qué se aplicó cada cobro (vigente para los aplicados; lo que tenía aplicado para los cancelados).
+  const apl = db.prepare(`SELECT a.pago_id, c.tipo, c.concepto, k.codigo, k.nombre, SUM(a.monto_cents) monto
+    FROM aplicaciones a JOIN pagos p ON p.id = a.pago_id JOIN polizas pol ON pol.id = p.poliza_id LEFT JOIN polizas cp ON cp.id = p.cancel_poliza_id JOIN cargos c ON c.id = a.cargo_id JOIN cuentas k ON k.id = c.cuenta_ingreso_id
+    WHERE p.condominio_id = ? AND p.idem_key NOT LIKE 'INI-%' AND a.tipo = 'pago' AND ((p.estado = 'aplicado' AND a.revertida = 0) OR (p.estado = 'cancelado' AND a.revertida = 1))
+      AND ((pol.fecha BETWEEN ? AND ?) OR (cp.fecha BETWEEN ? AND ?))
+    GROUP BY a.pago_id, c.id ORDER BY k.codigo, c.periodo, c.concepto`).all(cid, desde, hasta, desde, hasta);
   const otros = db.prepare(`SELECT k.codigo, k.nombre, p.concepto, SUM(m.haber_cents - m.debe_cents) monto FROM movimientos m JOIN polizas p ON p.id = m.poliza_id JOIN cuentas k ON k.id = m.cuenta_id
-    WHERE p.condominio_id = ? AND p.origen = 'manual' AND p.fecha BETWEEN ? AND ? AND k.tipo = 'ingreso' AND p.reversada_por IS NULL GROUP BY k.id, p.concepto HAVING monto > 0`).all(cid, desde, hasta);
+    WHERE p.condominio_id = ? AND p.origen IN ('manual','reverso') AND p.fecha BETWEEN ? AND ? AND k.tipo = 'ingreso' AND k.clave IS NOT 'BONIF'
+      AND EXISTS (SELECT 1 FROM movimientos m2 JOIN cuentas k2 ON k2.id = m2.cuenta_id WHERE m2.poliza_id = p.id AND (k2.clave = 'CAJA' OR k2.id IN (SELECT cuenta_id FROM cuentas_banco WHERE condominio_id = p.condominio_id)))
+    GROUP BY k.id, p.concepto HAVING monto <> 0`).all(cid, desde, hasta);
   const { add, salida } = agrupar(GRUPOS_ING);
-  let aplicado = 0;
-  for (const a of apl) { aplicado += a.monto; add(a.tipo === 'extraordinaria' ? 'extraordinarios' : 'ordinarios', `${a.codigo} · ${a.nombre}`, a.concepto, a.monto); }
-  if (pagos.s - aplicado > 0) add('pendientes', 'Saldos a favor y anticipos', 'Pagos recibidos que aún no cubren ninguna cuota', pagos.s - aplicado);
+  const aplicadoDe = new Map();
+  for (const a of apl) {
+    const sg = signo.get(a.pago_id); if (!sg) continue;
+    aplicadoDe.set(a.pago_id, (aplicadoDe.get(a.pago_id) || 0) + a.monto);
+    add(a.tipo === 'extraordinaria' ? 'extraordinarios' : 'ordinarios', `${a.codigo} · ${a.nombre}`, a.concepto, a.monto * sg);
+  }
+  let cobrado = 0, recibidos = 0, pendiente = 0;
+  const cancelados = { n: 0, monto: 0 }, metodos = new Map(), cuentas = new Map(), unidades = new Map();
+  for (const p of pagos) {
+    const sg = signo.get(p.id);
+    if (dentro(p.f)) recibidos++;
+    if (p.estado === 'cancelado' && dentro(p.fc)) { cancelados.n++; cancelados.monto += p.monto_cents; }
+    if (!sg) continue;
+    cobrado += p.monto_cents * sg;
+    pendiente += (p.monto_cents - (aplicadoDe.get(p.id) || 0)) * sg;
+    acumular(metodos, p.metodo, { metodo: METODO_NOMBRE[p.metodo] || p.metodo }, p.monto_cents * sg);
+    acumular(cuentas, p.cuenta ? `${p.banco} · ${p.cuenta}` : 'Caja (efectivo)', { cuenta: p.cuenta ? `${p.banco} · ${p.cuenta}` : 'Caja (efectivo)' }, p.monto_cents * sg);
+    acumular(unidades, p.unidad_id, { unidad_id: p.unidad_id, clave: p.clave, propietario: p.propietario }, p.monto_cents * sg);
+  }
+  if (pendiente) add('pendientes', 'Saldos a favor y anticipos', 'Pagos recibidos que aún no cubren ninguna cuota', pendiente);
   for (const o of otros) add('otros', `${o.codigo} · ${o.nombre}`, o.concepto, o.monto);
   const grupos = salida();
-  return { desde, hasta, pagos: pagos.n, cobrado: pagos.s, total: grupos.reduce((a, g) => a + g.total, 0), grupos };
+  const total = grupos.reduce((a, g) => a + g.total, 0);
+  const ant = periodoAnterior(desde, hasta);
+  const orden = m => [...m.values()].sort((x, y) => y.monto - x.monto);
+  const corto = diffDays(hasta, desde) <= 62;
+  return { desde, hasta, pagos: recibidos, cobrado, total, grupos, cancelados, por_metodo: orden(metodos), por_cuenta: orden(cuentas), por_unidad: orden(unidades),
+    anterior: detalle ? { ...ant, total: ingresos(db, cid, ant.desde, ant.hasta, { detalle: false }).total } : null,
+    recibos: detalle && corto ? pagos.filter(p => signo.get(p.id)).map(p => ({ folio: p.folio, fecha: p.f, fecha_pago: p.fecha, unidad_id: p.unidad_id, clave: p.clave, propietario: p.propietario, metodo: METODO_NOMBRE[p.metodo] || p.metodo,
+      cuenta: p.cuenta ? `${p.banco} · ${p.cuenta}` : 'Caja', referencia: p.referencia, monto: p.monto_cents * signo.get(p.id), cancelado: signo.get(p.id) < 0 })) : null };
 }
 
 export function ingresosMensual(db, cid, anio) {
   const cob = new Map(cobranzaMensual(db, cid, `${anio}-01`, `${anio}-12`).map(x => [x.periodo, x]));
   return { anio, meses: meses(`${anio}-01`, `${anio}-12`).map(p => {
-    const r = ingresos(db, cid, `${p}-01`, finDeMes(p));
+    const r = ingresos(db, cid, `${p}-01`, finDeMes(p), { detalle: false });
     const g = Object.fromEntries(r.grupos.map(x => [x.clave, x.total]));
     const c = cob.get(p);
     return { periodo: p, ...g, total: r.total, pagos: r.pagos, emitido: c.emitido, cobrado_del_mes: c.cobrado, indice: c.indice, clasificaciones: clasifDe(r.grupos) };
@@ -446,23 +532,57 @@ export function ingresosMensual(db, cid, anio) {
 }
 
 // ---------- Egresos del periodo por clasificación presupuestal ----------
-export function egresosReporte(db, cid, desde, hasta) {
-  const rows = db.prepare(`SELECT e.folio, e.fecha, e.concepto, e.total_cents, e.fondo, e.estado, k.codigo, k.nombre AS partida, pr.nombre AS proveedor, f.nombre AS fondo_nombre
-    FROM egresos e JOIN cuentas k ON k.id = e.cuenta_id LEFT JOIN proveedores pr ON pr.id = e.proveedor_id LEFT JOIN fondos f ON f.id = e.fondo_id
-    WHERE e.condominio_id = ? AND e.estado IN ('aprobado','pagado') AND e.fecha BETWEEN ? AND ? ORDER BY k.codigo, e.fecha, e.folio`).all(cid, desde, hasta);
+// Cada gasto cuenta en la fecha contable de su provisión (cuando se aprueba) y uno cancelado resta en el periodo de su cancelación:
+// el total cuadra con lo cargado a las partidas de gasto y a los fondos según el libro.
+export function egresosReporte(db, cid, desde, hasta, { detalle = true } = {}) {
+  const rows = db.prepare(`SELECT e.id, e.folio, e.fecha, e.concepto, e.total_cents, e.fondo, e.estado, e.metodo_pago, e.fecha_pago, e.factura_folio, k.id AS cuenta_id, k.codigo, k.nombre AS partida, pr.nombre AS proveedor,
+      f.nombre AS fondo_nombre, pp.fecha AS f, b.banco, b.nombre AS cuenta,
+      (SELECT MIN(x.fecha) FROM polizas x WHERE x.reversa_de = e.poliza_prov_id AND x.origen = 'cancelacion_egreso') AS fc
+    FROM egresos e JOIN polizas pp ON pp.id = e.poliza_prov_id JOIN cuentas k ON k.id = e.cuenta_id LEFT JOIN proveedores pr ON pr.id = e.proveedor_id LEFT JOIN fondos f ON f.id = e.fondo_id
+      LEFT JOIN cuentas_banco b ON b.id = e.cuenta_banco_id
+    WHERE e.condominio_id = ? AND ((e.estado IN ('aprobado','pagado') AND pp.fecha BETWEEN ? AND ?) OR e.estado = 'cancelado') ORDER BY k.codigo, pp.fecha, e.folio`).all(cid, desde, hasta);
+  const dentro = f => f != null && f >= desde && f <= hasta;
   const { add, salida } = agrupar([['ordinarios', 'Egresos ordinarios'], ['extraordinarios', 'Egresos extraordinarios']]);
-  for (const e of rows) add(e.fondo === 'reserva' ? 'extraordinarios' : 'ordinarios', `${e.codigo} · ${e.partida}`, e.concepto, e.total_cents,
-    { folio: e.folio, fecha: e.fecha, proveedor: e.proveedor, estado: e.estado, fondo: e.fondo_nombre || (e.fondo === 'reserva' ? 'Fondo de reserva' : null) });
+  let documentos = 0, pagado = 0, porPagar = 0, ajuste = 0;
+  const cancelados = { n: 0, monto: 0 }, proveedores = new Map(), metodos = new Map(), cuentas = new Map();
+  for (const e of rows) {
+    const sg = (dentro(e.f) ? 1 : 0) - (e.estado === 'cancelado' && dentro(e.fc) ? 1 : 0);
+    if (e.estado === 'cancelado' && dentro(e.fc)) { cancelados.n++; cancelados.monto += e.total_cents; }
+    if (!sg) continue;
+    if (sg > 0) documentos++;
+    const monto = e.total_cents * sg;
+    add(e.fondo === 'reserva' ? 'extraordinarios' : 'ordinarios', `${e.codigo} · ${e.partida}`, sg < 0 ? `Cancelación · ${e.concepto}` : e.concepto, monto,
+      { folio: e.folio, fecha: sg < 0 ? e.fc : e.f, proveedor: e.proveedor, estado: sg < 0 ? 'cancelado' : e.estado, factura: e.factura_folio, fondo: e.fondo_nombre || (e.fondo === 'reserva' ? 'Fondo de reserva' : null) });
+    if (e.estado === 'pagado') pagado += monto; else if (e.estado === 'aprobado') porPagar += monto; else ajuste += monto; // cancelados: su alta y su cancelación
+    acumular(proveedores, e.proveedor || 'Sin proveedor', { proveedor: e.proveedor || 'Sin proveedor' }, monto);
+    if (e.estado === 'pagado') {
+      acumular(metodos, e.metodo_pago, { metodo: METODO_NOMBRE[e.metodo_pago] || e.metodo_pago || 'Otro' }, monto);
+      acumular(cuentas, e.cuenta ? `${e.banco} · ${e.cuenta}` : 'Caja (efectivo)', { cuenta: e.cuenta ? `${e.banco} · ${e.cuenta}` : 'Caja (efectivo)' }, monto);
+    }
+  }
   const grupos = salida();
-  const pagado = rows.filter(e => e.estado === 'pagado').reduce((a, e) => a + e.total_cents, 0);
-  return { desde, hasta, documentos: rows.length, total: grupos.reduce((a, g) => a + g.total, 0), pagado, por_pagar: rows.reduce((a, e) => a + e.total_cents, 0) - pagado, grupos };
+  const total = grupos.reduce((a, g) => a + g.total, 0);
+  // Presupuesto del periodo por partida (si el rango cae en un solo ejercicio)
+  let presupuesto = null;
+  if (detalle && desde.slice(0, 4) === hasta.slice(0, 4)) {
+    const pvr = presupuestoVsReal(db, cid, +desde.slice(0, 4));
+    const m0 = +desde.slice(5, 7) - 1, m1 = +hasta.slice(5, 7);
+    const por = new Map(pvr.rows.map(r => [`${r.codigo} · ${r.nombre}`, r.presupuesto.slice(m0, m1).reduce((x, y) => x + y, 0)]));
+    presupuesto = { total: [...por.values()].reduce((x, y) => x + y, 0), aprobado: pvr.presupuesto?.estado === 'aprobado' };
+    for (const g of grupos) for (const c of g.clasificaciones) c.presupuesto = por.get(c.nombre) ?? 0;
+    presupuesto.sin_gasto = [...por].filter(([n, v]) => v > 0 && !grupos.some(g => g.clasificaciones.some(c => c.nombre === n))).map(([nombre, monto]) => ({ nombre, presupuesto: monto }));
+  }
+  const ant = periodoAnterior(desde, hasta);
+  const orden = m => [...m.values()].sort((x, y) => y.monto - x.monto);
+  return { desde, hasta, documentos, total, pagado, por_pagar: porPagar, cancelado_neto: ajuste, grupos, cancelados, por_proveedor: orden(proveedores), por_metodo: orden(metodos), por_cuenta: orden(cuentas), presupuesto,
+    anterior: detalle ? { ...ant, total: egresosReporte(db, cid, ant.desde, ant.hasta, { detalle: false }).total } : null };
 }
 
 export function egresosMensual(db, cid, anio) {
   const pvr = presupuestoVsReal(db, cid, anio);
   const pres = Array.from({ length: 12 }, (_, i) => pvr.rows.reduce((a, r) => a + r.presupuesto[i], 0));
   return { anio, meses: meses(`${anio}-01`, `${anio}-12`).map((p, i) => {
-    const r = egresosReporte(db, cid, `${p}-01`, finDeMes(p));
+    const r = egresosReporte(db, cid, `${p}-01`, finDeMes(p), { detalle: false });
     const g = Object.fromEntries(r.grupos.map(x => [x.clave, x.total]));
     return { periodo: p, ...g, total: r.total, documentos: r.documentos, presupuesto: pres[i], clasificaciones: clasifDe(r.grupos) };
   }) };
@@ -475,9 +595,13 @@ export function saldosBancarios(db, cid, desdeP, hastaP) {
   const al = db.prepare('SELECT COALESCE(SUM(m.debe_cents - m.haber_cents), 0) s FROM movimientos m JOIN polizas p ON p.id = m.poliza_id WHERE m.cuenta_id = ? AND p.periodo <= ?');
   const mov = db.prepare('SELECT COALESCE(SUM(m.debe_cents), 0) e, COALESCE(SUM(m.haber_cents), 0) s FROM movimientos m JOIN polizas p ON p.id = m.poliza_id WHERE m.cuenta_id = ? AND p.periodo BETWEEN ? AND ?');
   const ps = desdeP === hastaP ? meses(addMonths(hastaP, -5), hastaP) : meses(desdeP, hastaP);
+  const detalle = db.prepare(`SELECT p.fecha, p.tipo || '-' || p.folio AS poliza, p.concepto, m.debe_cents AS entrada, m.haber_cents AS salida FROM movimientos m JOIN polizas p ON p.id = m.poliza_id
+    WHERE m.cuenta_id = ? AND p.periodo BETWEEN ? AND ? ORDER BY p.fecha, p.id, m.id LIMIT 1500`);
   const rows = cuentas.map(c => {
     const anterior = al.get(c.cuenta_id, addMonths(desdeP, -1)).s, m = mov.get(c.cuenta_id, desdeP, hastaP);
-    return { ...c, anterior, ingresos: m.e, egresos: m.s, final: anterior + m.e - m.s, serie: ps.map(p => ({ periodo: p, saldo: al.get(c.cuenta_id, p).s })) };
+    let saldo = anterior;
+    const movimientos = detalle.all(c.cuenta_id, desdeP, hastaP).map(x => { saldo += x.entrada - x.salida; return { ...x, saldo }; });
+    return { ...c, anterior, ingresos: m.e, egresos: m.s, final: anterior + m.e - m.s, serie: ps.map(p => ({ periodo: p, saldo: al.get(c.cuenta_id, p).s })), movimientos };
   }).filter(c => c.id || c.anterior || c.ingresos || c.egresos);
   const t = k => rows.reduce((a, c) => a + c[k], 0);
   return { desde: desdeP, hasta: hastaP, cuentas: rows, totales: { anterior: t('anterior'), ingresos: t('ingresos'), egresos: t('egresos'), final: t('final') },
@@ -497,18 +621,25 @@ export function conciliacion(db, cid, desdeP, hastaP) {
     const base = libros.get(b.cuenta_id, addDays(primero.f, -1)).s;
     const bancoS = base + db.prepare('SELECT COALESCE(SUM(abono_cents - cargo_cents), 0) s FROM banco_movs WHERE cuenta_banco_id = ? AND fecha <= ?').get(b.id, corte).s;
     const delPeriodo = db.prepare('SELECT COUNT(*) n, COALESCE(SUM(abono_cents), 0) dep, COALESCE(SUM(cargo_cents), 0) ret, SUM(conciliado_tipo IS NOT NULL) conc FROM banco_movs WHERE cuenta_banco_id = ? AND fecha BETWEEN ? AND ?').get(b.id, desde, corte);
-    const noRegistrados = db.prepare('SELECT fecha, descripcion, referencia, abono_cents, cargo_cents FROM banco_movs WHERE cuenta_banco_id = ? AND fecha <= ? AND conciliado_tipo IS NULL ORDER BY fecha').all(b.id, corte);
-    const depTransito = db.prepare(`SELECT p.fecha, 'R-' || p.folio || ' · ' || u.clave AS documento, p.referencia, p.monto_cents AS monto FROM pagos p JOIN unidades u ON u.id = p.unidad_id
-      WHERE p.cuenta_banco_id = ? AND p.estado = 'aplicado' AND p.fecha BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'pago' AND x.conciliado_id = p.id) ORDER BY p.fecha`).all(b.id, primero.f, corte);
-    const pagTransito = db.prepare(`SELECT e.fecha_pago AS fecha, 'E-' || e.folio || ' · ' || e.concepto AS documento, e.referencia_pago AS referencia, e.total_cents AS monto FROM egresos e
-      WHERE e.cuenta_banco_id = ? AND e.estado = 'pagado' AND e.fecha_pago BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'egreso' AND x.conciliado_id = e.id) ORDER BY e.fecha_pago`).all(b.id, primero.f, corte);
+    // En el banco, sin documento en libros: movimientos sin conciliar o conciliados «sin documento» (comisiones, intereses).
+    const noRegistrados = db.prepare("SELECT fecha, descripcion, referencia, abono_cents, cargo_cents, conciliado_tipo FROM banco_movs WHERE cuenta_banco_id = ? AND fecha <= ? AND (conciliado_tipo IS NULL OR conciliado_tipo = 'otro') ORDER BY fecha").all(b.id, corte);
+    // En libros, aún no en el banco: cobros y pagos vigentes sin conciliar (por su fecha contable).
+    const depTransito = db.prepare(`SELECT pol.fecha, 'R-' || p.folio || ' · ' || u.clave AS documento, p.referencia, p.monto_cents AS monto FROM pagos p JOIN polizas pol ON pol.id = p.poliza_id JOIN unidades u ON u.id = p.unidad_id
+      WHERE p.cuenta_banco_id = ? AND p.estado = 'aplicado' AND pol.fecha BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'pago' AND x.conciliado_id = p.id) ORDER BY pol.fecha`).all(b.id, primero.f, corte);
+    const pagTransito = db.prepare(`SELECT pol.fecha, 'E-' || e.folio || ' · ' || e.concepto AS documento, e.referencia_pago AS referencia, e.total_cents AS monto FROM egresos e JOIN polizas pol ON pol.id = e.poliza_pago_id
+      WHERE e.cuenta_banco_id = ? AND e.estado = 'pagado' AND pol.fecha BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM banco_movs x WHERE x.conciliado_tipo = 'egreso' AND x.conciliado_id = e.id) ORDER BY pol.fecha`).all(b.id, primero.f, corte);
+    // Otros asientos en la cuenta (traspasos, cancelaciones, ajustes) que no son un cobro ni un pago vigente.
+    const otrosLibros = db.prepare(`SELECT p.fecha, p.tipo || '-' || p.folio || ' · ' || p.concepto AS documento, m.debe_cents - m.haber_cents AS monto FROM movimientos m JOIN polizas p ON p.id = m.poliza_id
+      WHERE m.cuenta_id = ? AND p.fecha BETWEEN ? AND ?
+        AND NOT (p.origen = 'pago' AND EXISTS (SELECT 1 FROM pagos g WHERE g.poliza_id = p.id AND g.estado = 'aplicado'))
+        AND NOT (p.origen = 'pago_egreso' AND EXISTS (SELECT 1 FROM egresos e WHERE e.poliza_pago_id = p.id AND e.estado = 'pagado')) ORDER BY p.fecha, p.id`).all(b.cuenta_id, primero.f, corte);
     const s = (l, k) => l.reduce((a, x) => a + x[k], 0);
-    const abonosNR = s(noRegistrados, 'abono_cents'), cargosNR = s(noRegistrados, 'cargo_cents'), dT = s(depTransito, 'monto'), pT = s(pagTransito, 'monto');
-    const conciliado = bancoS - abonosNR + cargosNR + dT - pT;
+    const abonosNR = s(noRegistrados, 'abono_cents'), cargosNR = s(noRegistrados, 'cargo_cents'), dT = s(depTransito, 'monto'), pT = s(pagTransito, 'monto'), oL = s(otrosLibros, 'monto');
+    const conciliado = bancoS - abonosNR + cargosNR + dT - pT + oL;
     return { ...b, desde_estado: primero.f, ultimo_mov: primero.u, banco: b.banco, saldo_banco: bancoS, libros: enLibros,
       periodo: { movimientos: delPeriodo.n, depositos: delPeriodo.dep, retiros: delPeriodo.ret, conciliados: delPeriodo.conc || 0 },
-      abonos_no_registrados: abonosNR, cargos_no_registrados: cargosNR, depositos_transito: dT, pagos_transito: pT, saldo_conciliado: conciliado, diferencia: enLibros - conciliado,
-      no_registrados: noRegistrados, depositos_en_transito: depTransito, pagos_en_transito: pagTransito };
+      abonos_no_registrados: abonosNR, cargos_no_registrados: cargosNR, depositos_transito: dT, pagos_transito: pT, otros_libros: oL, saldo_conciliado: conciliado, diferencia: enLibros - conciliado,
+      no_registrados: noRegistrados, depositos_en_transito: depTransito, pagos_en_transito: pagTransito, otros_en_libros: otrosLibros };
   });
   return { desde: desdeP, hasta: hastaP, corte, cuentas };
 }

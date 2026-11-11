@@ -4,7 +4,7 @@ import { writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tx, DB_PATH, FILES_DIR } from './db.mjs';
 import { audit, sha256, token, hashPassword, verifyAuditChain, rateLimit as rl } from './security.mjs';
-import { fail, v, hoy, periodoDe, periodoActual, addMonths, finDeMes, mask } from './util.mjs';
+import { fail, v, hoy, periodoDe, periodoActual, addMonths, finDeMes, mask, isDate } from './util.mjs';
 import * as F from './finanzas.mjs';
 import * as R from './reportes.mjs';
 import { membresias, revocarSesionesDe, TEMPORAL_MS } from './auth.mjs';
@@ -63,7 +63,7 @@ const sinSecretos = b => {
 
 const q = (ctx, k, def = null) => ctx.query.get(k) ?? def;
 const qPeriodo = (ctx, k, def) => { const p = q(ctx, k, def); if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) fail(400, `Periodo «${k}» inválido.`); return p; };
-const qFecha = (ctx, k, def) => { const p = q(ctx, k, def); if (!/^\d{4}-\d{2}-\d{2}$/.test(p)) fail(400, `Fecha «${k}» inválida.`); return p; };
+const qFecha = (ctx, k, def) => { const p = q(ctx, k, def); if (!isDate(p)) fail(400, `Fecha «${k}» inválida.`); return p; };
 // Periodo de consulta por año y mes (mes 0 = año completo, hasta el mes en curso).
 function qRango(ctx) {
   const anio = qInt(ctx, 'anio', +hoy().slice(0, 4)), mes = qInt(ctx, 'mes', +hoy().slice(5, 7));
@@ -505,8 +505,10 @@ export const apiRoutes = [
   // ===== Morosidad =====
   ['GET', `${C}/morosidad`, { perm: 'ver' }, ctx => {
     const corte = qFecha(ctx, 'corte', hoy());
+    if (corte > hoy()) fail(400, 'La fecha de corte no puede ser futura.');
     const rows = R.carteraUnidades(ctx.db, ctx.cid, corte);
-    return { corte, resumen: R.resumenCartera(rows), unidades: rows };
+    return { corte, resumen: R.resumenCartera(rows), unidades: rows,
+      ...(q(ctx, 'detalle') === '1' ? { cargos: R.carteraDetalle(ctx.db, ctx.cid, corte), tendencia: R.tendenciaMorosidad(ctx.db, ctx.cid, periodoDe(corte)) } : {}) };
   }],
   ['POST', `${C}/gestiones`, { perm: 'capturar' }, ctx => {
     const b = v(ctx.body, { unidad_id: 'int|min1', tipo: 'enum|llamada|correo|whatsapp|visita|carta|promesa|aviso_legal', nota: 'str|max500', promesa_fecha: 'date|opt', promesa_cents: 'cents|opt' });
@@ -830,8 +832,9 @@ export const apiRoutes = [
     FROM periodos pe LEFT JOIN usuarios u ON u.id = pe.cerrado_por WHERE pe.condominio_id = ? ORDER BY pe.periodo DESC`).all(ctx.cid)],
   ['GET', `${C}/periodos/:p/checklist`, { perm: 'ver' }, ctx => { const p = ctx.params.p; if (!/^\d{4}-\d{2}$/.test(p)) fail(400, 'Periodo inválido'); return F.checklistCierre(ctx.db, ctx.cid, p); }],
   ['POST', `${C}/periodos/:p/cerrar`, { perm: 'cerrar' }, ctx => {
-    const p = ctx.params.p; if (!/^\d{4}-\d{2}$/.test(p)) fail(400, 'Periodo inválido');
-    try { crearRespaldo(ctx.db, `antes de cerrar ${p}`); } catch (e) { fail(500, 'No se pudo crear el respaldo previo al cierre; el cierre se canceló por seguridad.'); }
+    const p = ctx.params.p; if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(p)) fail(400, 'Periodo inválido');
+    F.validarCierre(ctx.db, ctx.cid, p);
+    try { crearRespaldo(ctx.db, `antes de cerrar ${p}`); } catch (e) { console.error('[respaldo]', e); fail(500, 'No se pudo crear el respaldo previo al cierre; el cierre se canceló por seguridad.'); }
     return escribir(ctx, 'periodo_cerrado', 'periodo', () => F.cerrarPeriodo(ctx.db, ctx.cid, p, ctx.user));
   }],
   ['POST', `${C}/periodos/:p/reabrir`, {}, ctx => {
@@ -842,7 +845,8 @@ export const apiRoutes = [
   }],
   ['POST', `${C}/ejercicios/:anio/cerrar`, { perm: 'cerrar' }, ctx => {
     const anio = idParam(ctx, 'anio');
-    try { crearRespaldo(ctx.db, `antes de cerrar ejercicio ${anio}`); } catch { fail(500, 'No se pudo crear el respaldo previo; el cierre se canceló por seguridad.'); }
+    if (anio < 2000 || anio >= +hoy().slice(0, 4)) fail(409, 'Solo se cierra un ejercicio ya terminado.');
+    try { crearRespaldo(ctx.db, `antes de cerrar ejercicio ${anio}`); } catch (e) { console.error('[respaldo]', e); fail(500, 'No se pudo crear el respaldo previo; el cierre se canceló por seguridad.'); }
     return escribir(ctx, 'ejercicio_cerrado', 'ejercicio', () => F.cerrarEjercicio(ctx.db, ctx.cid, anio, ctx.user));
   }],
 

@@ -43,7 +43,7 @@ const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', '
 export const nombrePeriodo = p => `${MESES[+p.slice(5, 7) - 1]} ${p.slice(0, 4)}`;
 
 // ---------- Validación estricta de entradas ----------
-const isDate = s => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z')) && new Date(s + 'T00:00:00Z').toISOString().slice(0, 10) === s;
+export const isDate = s => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(s) && !isNaN(Date.parse(s + 'T00:00:00Z')) && new Date(s + 'T00:00:00Z').toISOString().slice(0, 10) === s;
 const isPeriodo = s => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 
 // v(body, { campo: 'tipo|opcional' }) → objeto limpio o error 400.

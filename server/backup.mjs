@@ -52,7 +52,7 @@ export function crearRespaldo(db, motivo = 'programado') {
     if (!verificarPlano(tmp)) throw new Error('La copia no pasó la verificación de integridad');
     const plain = readFileSync(tmp);
     const enc = cifrar(plain);
-    const nombre = `indiviso-${stamp}.idvb`;
+    const nombre = `indiviso-${stamp}-${randomBytes(2).toString('hex')}.idvb`; // sufijo: dos respaldos en el mismo segundo no chocan
     const destino = join(BACKUP_DIR, nombre);
     writeFileSync(destino, enc, { mode: 0o600 });
     // relectura y descifrado de prueba: el respaldo solo cuenta si se puede restaurar
@@ -114,7 +114,7 @@ export function verificarRespaldo(nombre) {
 
 export function rutaRespaldo(nombre) {
   const f = join(BACKUP_DIR, basename(nombre));
-  if (!/^indiviso-[\d-]+\.idvb$/.test(basename(nombre)) || !existsSync(f)) return null;
+  if (!/^indiviso-[\d-]+(-[0-9a-f]{4})?\.idvb$/.test(basename(nombre)) || !existsSync(f)) return null;
   return f;
 }
 

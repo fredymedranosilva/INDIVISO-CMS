@@ -115,3 +115,29 @@ test('plantillas: las filas de ejemplo no se importan; egresos con columnas de V
   assert.equal(es[0].estado, 'pagado');
   assert.throws(() => imp('egresos', filas.slice(0, 2), false), /solo trae las filas de ejemplo/);
 });
+
+test('cierre y reapertura de ejercicio: con el año terminado y sus meses cerrados', () => {
+  const Y = +hoy().slice(0, 4) - 1, c2 = tx(db, () => F.crearCondominio(db, { nombre: 'Cierre anual' }, u1));
+  const b2 = tx(db, () => F.crearCuentaBanco(db, c2, { nombre: 'Op', banco: 'Banco', numero: '5555666677' }));
+  const un = Number(db.prepare("INSERT INTO unidades (condominio_id, clave, indiviso_ppm, cuota_cents, referencia, created_at) VALUES (?, 'Z-1', 1000000, 100000, 'RZ1', 0)").run(c2).lastInsertRowid);
+  for (const m of ['03', '04']) {
+    tx(db, () => F.emitirCuotas(db, c2, `${Y}-${m}`, u1));
+    tx(db, () => F.registrarPago(db, c2, { unidad_id: un, fecha: `${Y}-${m}-15`, monto_cents: 100000, metodo: 'transferencia', cuenta_banco_id: b2, referencia: `Z${m}`, idem_key: `CIERREKEY${m}` }, u1));
+  }
+  assert.throws(() => tx(db, () => F.cerrarEjercicio(db, c2, Y + 1, u1)), /aún no termina/);
+  assert.throws(() => tx(db, () => F.cerrarEjercicio(db, c2, Y, u1)), /meses abiertos/);
+  for (const m of ['03', '04']) tx(db, () => F.cerrarPeriodo(db, c2, `${Y}-${m}`, u1));
+  const antes = R.balanceGeneral(db, c2, `${Y}-12`);
+  assert.equal(antes.resultado_acumulado, 180000, 'ingresos del año sin la aportación a reserva');
+  tx(db, () => F.cerrarEjercicio(db, c2, Y, u1));
+  const bal = R.balanceGeneral(db, c2, `${Y}-12`);
+  assert.equal(bal.resultado_acumulado, 0); assert.equal(bal.cuadra, true);
+  assert.equal(R.saldoCuentaClave(db, c2, 'REMANENTE'), 180000);
+  assert.equal(R.estadoResultados(db, c2, `${Y}-01`, `${Y}-12`).totales.ingresos, 180000, 'el estado de resultados no cambia con el cierre');
+  assert.throws(() => tx(db, () => F.cerrarEjercicio(db, c2, Y, u1)), /ya fue cerrado/);
+  assert.throws(() => tx(db, () => F.reabrirPeriodo(db, c2, `${Y}-04`)), /reabra primero el ejercicio/);
+  tx(db, () => F.reabrirEjercicio(db, c2, Y, 'ajuste de auditoría', u1));
+  assert.equal(R.balanceGeneral(db, c2, `${Y}-12`).resultado_acumulado, 180000);
+  tx(db, () => F.reabrirPeriodo(db, c2, `${Y}-04`));
+  assert.equal(R.verificarIntegridad(db, c2).ok, true);
+});
