@@ -18,6 +18,12 @@ export function dbError(e) {
 const pad = n => String(n).padStart(2, '0');
 export const hoy = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 export const periodoDe = fecha => fecha.slice(0, 7);
+// Fechas de operaciones de dinero ya ocurridas (cobros, pagos, gastos): ni futuras ni absurdamente antiguas.
+export function fechaOperable(fecha, campo = 'La fecha') {
+  if (fecha > hoy()) fail(400, `${campo} no puede ser futura.`);
+  if (fecha < '2000-01-01') fail(400, `${campo} es demasiado antigua.`);
+  return fecha;
+}
 export const periodoActual = () => periodoDe(hoy());
 export function addMonths(periodo, n) {
   const [y, m] = periodo.split('-').map(Number);

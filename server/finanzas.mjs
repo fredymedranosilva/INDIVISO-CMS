@@ -1,6 +1,6 @@
 // Motor financiero: partida doble, cobranza, egresos, conciliación, presupuesto y cierres.
 // Todas las funciones que escriben deben ejecutarse dentro de tx() (ver db.mjs).
-import { fail, hoy, periodoDe, addMonths, addDays, diffDays, nombrePeriodo, prorratear, mask } from './util.mjs';
+import { fail, hoy, periodoDe, addMonths, addDays, diffDays, nombrePeriodo, prorratear, mask, fechaOperable } from './util.mjs';
 import { token, sha256 } from './security.mjs';
 
 // ---------- Catálogo de cuentas base ----------
@@ -103,7 +103,8 @@ export function polizaManual(db, cid, data, user) {
   for (const l of data.lineas) {
     if (prohibidas.has(l.cuenta)) fail(400, 'Las cuentas de condóminos solo se afectan desde Cobranza (mantiene cuadrados los estados de cuenta).');
   }
-  return crearPoliza(db, cid, { tipo: data.tipo, fecha: data.fecha, concepto: data.concepto, origen: 'manual', lineas: data.lineas }, user);
+  fechaOperable(data.fecha, 'La fecha de la póliza');
+  return crearPoliza(db, cid, { tipo: data.tipo, fecha: data.fecha, concepto: data.concepto, origen: 'manual', lineas: data.lineas.map(l => ({ cuenta: l.cuenta, debe: l.debe, haber: l.haber, concepto: l.concepto })) }, user);
 }
 
 export function revertirPoliza(db, cid, polizaId, motivo, user) {
@@ -413,6 +414,10 @@ export function registrarPago(db, cid, d, user, { validar = true } = {}) {
     return { id: prev.id, folio: prev.folio, estado: prev.estado, repetido: true };
   }
   unidadDe(db, cid, d.unidad_id);
+  fechaOperable(d.fecha, 'La fecha de pago');
+  // Todo lo que el pago referencia debe ser de este condominio (aislamiento entre condominios).
+  if (d.cuenta_banco_id && !db.prepare('SELECT 1 FROM cuentas_banco WHERE id = ? AND condominio_id = ? AND activo = 1').get(d.cuenta_banco_id, cid)) fail(400, 'Cuenta bancaria inválida.');
+  if (d.comprobante_id && !db.prepare('SELECT 1 FROM archivos WHERE id = ? AND condominio_id = ?').get(d.comprobante_id, cid)) fail(400, 'Comprobante inválido.');
   if (d.cuenta_banco_id && d.referencia) {
     const dup = db.prepare(`SELECT folio FROM pagos WHERE condominio_id = ? AND cuenta_banco_id = ? AND referencia = ? AND monto_cents = ? AND estado IN ('por_validar','aplicado')`).get(cid, d.cuenta_banco_id, d.referencia, d.monto_cents);
     if (dup) fail(409, `Ya existe un pago con la misma referencia bancaria e importe${dup.folio ? ` (recibo R-${dup.folio})` : ''}.`, 'DUPLICADO');
@@ -507,8 +512,13 @@ function provisionarEgreso(db, cid, e, user) {
 }
 
 export function crearEgreso(db, cid, d, user) {
-  const prev = db.prepare('SELECT id, folio, estado FROM egresos WHERE idem_key = ?').get(d.idem_key);
-  if (prev) return { ...prev, repetido: true };
+  const prev = db.prepare('SELECT id, folio, estado, condominio_id FROM egresos WHERE idem_key = ?').get(d.idem_key);
+  if (prev) { // reintento de la misma operación: se devuelve el resultado original
+    if (prev.condominio_id !== cid) fail(409, 'Clave de operación duplicada.');
+    return { id: prev.id, folio: prev.folio, estado: prev.estado, repetido: true };
+  }
+  fechaOperable(d.fecha, 'La fecha del gasto');
+  if (d.comprobante_id && !db.prepare('SELECT 1 FROM archivos WHERE id = ? AND condominio_id = ?').get(d.comprobante_id, cid)) fail(400, 'Comprobante inválido.');
   const c = condo(db, cid);
   const cta = db.prepare("SELECT id FROM cuentas WHERE id = ? AND condominio_id = ? AND tipo = 'egreso' AND activo = 1").get(d.cuenta_id, cid);
   if (!cta) fail(400, 'Seleccione una partida de gasto válida.');
@@ -543,6 +553,7 @@ export function aprobarEgreso(db, cid, id, aprobar, motivo, user) {
 export function pagarEgreso(db, cid, id, d, user) {
   const e = db.prepare('SELECT * FROM egresos WHERE id = ? AND condominio_id = ?').get(id, cid) || fail(404, 'Egreso no encontrado');
   if (e.estado !== 'aprobado') fail(409, e.estado === 'por_aprobar' ? 'El egreso requiere aprobación antes de pagarse.' : 'El egreso no puede pagarse en su estado actual.');
+  fechaOperable(d.fecha_pago, 'La fecha de pago');
   const ctaPago = d.metodo === 'efectivo' && !d.cuenta_banco_id ? cuenta(db, cid, 'CAJA') : cuentaDeCobro(db, cid, { cuenta_banco_id: d.cuenta_banco_id, metodo: d.metodo });
   const pid = crearPoliza(db, cid, {
     tipo: 'E', fecha: fechaContable(db, cid, d.fecha_pago), concepto: `Pago E-${e.folio} · ${e.concepto}${d.referencia ? ' · ref. ' + d.referencia : ''}`, origen: 'pago_egreso', origen_id: e.id,
@@ -723,24 +734,42 @@ export function cerrarPeriodo(db, cid, periodo, user) {
   return ck;
 }
 
+const ejercicioCerrado = (db, cid, anio) => db.prepare("SELECT id FROM polizas WHERE condominio_id = ? AND origen = 'cierre_ejercicio' AND periodo = ? AND reversada_por IS NULL").get(cid, `${anio}-12`);
+
 export function reabrirPeriodo(db, cid, periodo) {
   const ultimo = db.prepare("SELECT MAX(periodo) p FROM periodos WHERE condominio_id = ? AND estado = 'cerrado'").get(cid).p;
   if (ultimo !== periodo) fail(409, 'Solo puede reabrirse el último periodo cerrado.');
+  if (ejercicioCerrado(db, cid, +periodo.slice(0, 4))) fail(409, `El ejercicio ${periodo.slice(0, 4)} ya fue cerrado: reabra primero el ejercicio.`);
   db.prepare("INSERT OR REPLACE INTO meta (k, v) VALUES ('permitir_reapertura', '1')").run();
   db.prepare("UPDATE periodos SET estado = 'abierto' WHERE condominio_id = ? AND periodo = ?").run(cid, periodo);
   db.prepare("DELETE FROM meta WHERE k = 'permitir_reapertura'").run();
 }
 
 // Cierre de ejercicio: traspasa el resultado del año a «Remanente de ejercicios anteriores».
+// Se hace con el año terminado y sus doce meses cerrados, para que nada cambie el resultado después.
 export function cerrarEjercicio(db, cid, anio, user) {
-  if (db.prepare("SELECT 1 FROM polizas WHERE condominio_id = ? AND origen = 'cierre_ejercicio' AND periodo = ? AND reversada_por IS NULL").get(cid, `${anio}-12`)) fail(409, 'El ejercicio ya fue cerrado.');
+  if (anio >= +hoy().slice(0, 4)) fail(409, 'El ejercicio aún no termina.');
+  if (ejercicioCerrado(db, cid, anio)) fail(409, 'El ejercicio ya fue cerrado.');
+  const abiertos = db.prepare("SELECT COUNT(*) n FROM periodos WHERE condominio_id = ? AND periodo BETWEEN ? AND ? AND estado = 'abierto'").get(cid, `${anio}-01`, `${anio}-12`).n;
+  if (abiertos) fail(409, `Cierre primero los ${abiertos} ${abiertos === 1 ? 'mes abierto' : 'meses abiertos'} de ${anio}.`);
   const saldos = db.prepare(`SELECT k.id, k.tipo, SUM(m.debe_cents) - SUM(m.haber_cents) AS neto FROM movimientos m JOIN polizas p ON p.id = m.poliza_id JOIN cuentas k ON k.id = m.cuenta_id
     WHERE p.condominio_id = ? AND p.periodo BETWEEN ? AND ? AND k.tipo IN ('ingreso','egreso') GROUP BY k.id HAVING neto <> 0`).all(cid, `${anio}-01`, `${anio}-12`);
   if (!saldos.length) fail(400, 'No hay movimientos de resultados en el ejercicio.');
   const lineas = saldos.map(s => s.neto > 0 ? { cuenta: s.id, haber: s.neto } : { cuenta: s.id, debe: -s.neto });
   const neto = saldos.reduce((a, s) => a + s.neto, 0); // > 0 = déficit
-  lineas.push(neto > 0 ? { cuenta: cuenta(db, cid, 'REMANENTE'), debe: neto, concepto: 'Déficit del ejercicio' } : { cuenta: cuenta(db, cid, 'REMANENTE'), haber: -neto, concepto: 'Remanente del ejercicio' });
+  if (neto !== 0) lineas.push(neto > 0 ? { cuenta: cuenta(db, cid, 'REMANENTE'), debe: neto, concepto: 'Déficit del ejercicio' } : { cuenta: cuenta(db, cid, 'REMANENTE'), haber: -neto, concepto: 'Remanente del ejercicio' });
   return crearPoliza(db, cid, { tipo: 'D', fecha: `${anio}-12-31`, concepto: `Cierre del ejercicio ${anio}`, origen: 'cierre_ejercicio', lineas }, user);
+}
+
+// Reapertura de ejercicio: contrapóliza del cierre. Después pueden reabrirse sus periodos.
+export function reabrirEjercicio(db, cid, anio, motivo, user) {
+  const c = ejercicioCerrado(db, cid, anio) || fail(409, 'El ejercicio no está cerrado.');
+  if (ejercicioCerrado(db, cid, anio + 1)) fail(409, `Reabra primero el ejercicio ${anio + 1}.`);
+  const movs = db.prepare('SELECT * FROM movimientos WHERE poliza_id = ?').all(c.id);
+  const nid = crearPoliza(db, cid, { tipo: 'D', fecha: `${anio}-12-31`, concepto: `Reapertura del ejercicio ${anio}: ${motivo}`, origen: 'reapertura_ejercicio', reversa_de: c.id,
+    lineas: movs.map(m => ({ cuenta: m.cuenta_id, debe: m.haber_cents, haber: m.debe_cents, concepto: m.concepto })) }, user);
+  db.prepare('UPDATE polizas SET reversada_por = ? WHERE id = ?').run(nid, c.id);
+  return nid;
 }
 
 export { diffDays };

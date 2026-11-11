@@ -14,7 +14,7 @@ function saldos(db, cid, desdeP, hastaP, { sinCierre = true } = {}) {
   return db.prepare(`SELECT k.id, k.codigo, k.nombre, k.tipo, k.naturaleza, k.clave,
       COALESCE(SUM(m.debe_cents), 0) AS debe, COALESCE(SUM(m.haber_cents), 0) AS haber
     FROM cuentas k LEFT JOIN movimientos m ON m.cuenta_id = k.id
-      AND m.poliza_id IN (SELECT id FROM polizas WHERE condominio_id = ? AND periodo BETWEEN ? AND ? ${sinCierre ? "AND origen <> 'cierre_ejercicio'" : ''})
+      AND m.poliza_id IN (SELECT id FROM polizas WHERE condominio_id = ? AND periodo BETWEEN ? AND ? ${sinCierre ? "AND origen NOT IN ('cierre_ejercicio','reapertura_ejercicio')" : ''})
     WHERE k.condominio_id = ? GROUP BY k.id ORDER BY k.codigo`).all(cid, desdeP, hastaP, cid);
 }
 const saldoNat = r => r.naturaleza === 'D' ? r.debe - r.haber : r.haber - r.debe;
@@ -140,7 +140,7 @@ export function estadoResultados(db, cid, desdeP, hastaP) {
   const ps = meses(desdeP, hastaP);
   const rows = db.prepare(`SELECT k.id, k.codigo, k.nombre, k.tipo, k.naturaleza, p.periodo, SUM(m.debe_cents) d, SUM(m.haber_cents) h
     FROM movimientos m JOIN polizas p ON p.id = m.poliza_id JOIN cuentas k ON k.id = m.cuenta_id
-    WHERE p.condominio_id = ? AND p.periodo BETWEEN ? AND ? AND p.origen <> 'cierre_ejercicio' AND k.tipo IN ('ingreso','egreso')
+    WHERE p.condominio_id = ? AND p.periodo BETWEEN ? AND ? AND p.origen NOT IN ('cierre_ejercicio','reapertura_ejercicio') AND k.tipo IN ('ingreso','egreso')
     GROUP BY k.id, p.periodo ORDER BY k.codigo`).all(cid, desdeP, hastaP);
   const cuentas = new Map();
   for (const r of rows) {
@@ -200,7 +200,7 @@ export function presupuestoVsReal(db, cid, ejercicio, presId = null) {
   const lineas = pres ? db.prepare('SELECT cuenta_id, mes, monto_cents FROM presupuesto_lineas WHERE presupuesto_id = ?').all(pres.id) : [];
   const real = db.prepare(`SELECT m.cuenta_id, CAST(substr(p.periodo, 6, 2) AS INTEGER) AS mes, SUM(m.debe_cents - m.haber_cents) AS v
     FROM movimientos m JOIN polizas p ON p.id = m.poliza_id JOIN cuentas k ON k.id = m.cuenta_id
-    WHERE p.condominio_id = ? AND p.periodo BETWEEN ? AND ? AND p.origen <> 'cierre_ejercicio' AND k.tipo = 'egreso' GROUP BY m.cuenta_id, mes`).all(cid, `${ejercicio}-01`, `${ejercicio}-12`);
+    WHERE p.condominio_id = ? AND p.periodo BETWEEN ? AND ? AND p.origen NOT IN ('cierre_ejercicio','reapertura_ejercicio') AND k.tipo = 'egreso' GROUP BY m.cuenta_id, mes`).all(cid, `${ejercicio}-01`, `${ejercicio}-12`);
   const cuentas = db.prepare("SELECT id, codigo, nombre FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(cid);
   const mesActual = periodoDe(hoy()).startsWith(String(ejercicio)) ? +hoy().slice(5, 7) : (ejercicio < +hoy().slice(0, 4) ? 12 : 0);
   const rows = cuentas.map(k => {

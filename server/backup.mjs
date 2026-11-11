@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
-import { DATA_DIR } from './db.mjs';
+import { DATA_DIR, FILES_DIR } from './db.mjs';
 import { sha256 } from './security.mjs';
 
 export const BACKUP_DIR = process.env.INDIVISO_BACKUPS || join(DATA_DIR, 'respaldos');
@@ -60,8 +60,40 @@ export function crearRespaldo(db, motivo = 'programado') {
     db.prepare('INSERT INTO respaldos (archivo, sha256, bytes, motivo, verificado, created_at) VALUES (?,?,?,?,?,?)')
       .run(nombre, sha256(enc), enc.length, motivo, ok ? 1 : 0, Date.now());
     podar();
-    return { archivo: nombre, bytes: enc.length, verificado: ok };
+    return { archivo: nombre, bytes: enc.length, verificado: ok, adjuntos: respaldarAdjuntos() };
   } finally { try { unlinkSync(tmp); } catch { /* ya eliminado */ } }
+}
+
+// Los adjuntos (comprobantes, facturas, documentos) no cambian una vez guardados: cada uno se copia cifrado una sola vez.
+export const ADJUNTOS_DIR = join(BACKUP_DIR, 'archivos');
+export function respaldarAdjuntos() {
+  mkdirSync(ADJUNTOS_DIR, { recursive: true, mode: 0o700 });
+  let nuevos = 0, total = 0;
+  for (const f of existsSync(FILES_DIR) ? readdirSync(FILES_DIR) : []) {
+    if (!/^[0-9a-f]{64}$/.test(f)) continue;
+    total++;
+    const destino = join(ADJUNTOS_DIR, `${f}.idva`);
+    if (existsSync(destino)) continue;
+    writeFileSync(destino, cifrar(readFileSync(join(FILES_DIR, f))), { mode: 0o600 });
+    nuevos++;
+  }
+  return { total, nuevos };
+}
+// Restaura los adjuntos que falten en la carpeta de datos (cada uno se verifica contra su sha256).
+export function restaurarAdjuntos() {
+  mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 });
+  let restaurados = 0, danados = 0;
+  for (const f of existsSync(ADJUNTOS_DIR) ? readdirSync(ADJUNTOS_DIR) : []) {
+    const m = /^([0-9a-f]{64})\.idva$/.exec(f); if (!m) continue;
+    const destino = join(FILES_DIR, m[1]);
+    if (existsSync(destino)) continue;
+    try {
+      const plano = descifrar(readFileSync(join(ADJUNTOS_DIR, f)));
+      if (sha256(plano) !== m[1]) throw new Error('contenido alterado');
+      writeFileSync(destino, plano, { mode: 0o600 }); restaurados++;
+    } catch { danados++; }
+  }
+  return { restaurados, danados };
 }
 
 function podar() {

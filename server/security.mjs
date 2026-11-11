@@ -27,13 +27,14 @@ export function verifyPassword(pass, stored) {
 // Hash ficticio para igualar el tiempo de respuesta cuando el usuario no existe.
 export const DUMMY_HASH = hashPassword(token(12));
 
-const COMUNES = new Set(['password', 'contraseña', '123456789012', 'qwertyuiop12', 'administrador', 'condominio123', 'passw0rd1234']);
+const COMUNES = new Set(['password', 'contraseña', '123456789012', 'qwertyuiop12', 'administrador', 'condominio123', 'passw0rd1234', 'password1234', 'password123!', 'contraseña123', 'contrasena123', 'administrador1', 'admin123456789', 'qwerty123456', '1q2w3e4r5t6y', 'abc123456789', 'indiviso1234', 'bienvenido123', 'mexico123456']);
 export function passwordProblem(pass, email = '') {
   if (typeof pass !== 'string' || pass.length < 12) return 'La contraseña debe tener al menos 12 caracteres.';
   if (pass.length > 128) return 'La contraseña es demasiado larga.';
   const kinds = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter(r => r.test(pass)).length;
   if (kinds < 3) return 'Combine al menos tres tipos: minúsculas, mayúsculas, números y símbolos.';
-  if (COMUNES.has(pass.toLowerCase())) return 'La contraseña es demasiado común.';
+  if (COMUNES.has(pass.toLowerCase()) || COMUNES.has(pass.toLowerCase().replace(/[^a-z0-9ñ]/g, ''))) return 'La contraseña es demasiado común.';
+  if (/^(.)\1+$/.test(pass) || /^(..?.?)\1+$/.test(pass)) return 'La contraseña no puede ser una repetición.';
   const local = email.split('@')[0].toLowerCase();
   if (local.length >= 4 && pass.toLowerCase().includes(local)) return 'La contraseña no debe contener su usuario.';
   return null;
@@ -67,6 +68,8 @@ function hotp(secret, counter) {
   return String(code).padStart(6, '0');
 }
 export const newTotpSecret = () => base32Encode(randomBytes(20));
+// Código vigente para un secreto (lo usan las pruebas automáticas y las herramientas de soporte).
+export const codigoTotp = (secret, now = Date.now()) => hotp(secret, Math.floor(now / 30000));
 // Devuelve el paso de tiempo usado (para impedir reutilización del mismo código) o null.
 export function verifyTotp(secret, code, lastStep = 0, now = Date.now()) {
   if (!/^\d{6}$/.test(String(code || ''))) return null;
@@ -80,8 +83,13 @@ export function verifyTotp(secret, code, lastStep = 0, now = Date.now()) {
   return null;
 }
 
+// Códigos de respaldo de un solo uso (por si se pierde el teléfono): se guardan solo sus hashes.
+export const nuevosCodigosRespaldo = (n = 10) => Array.from({ length: n }, () => { const s = base32Encode(randomBytes(5)); return `${s.slice(0, 4)}-${s.slice(4, 8)}`; });
+export const normalizarCodigo = c => String(c || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+
 // ---------- Limitación de intentos en memoria ----------
 const buckets = new Map();
+// Cuenta un intento y dice si sigue dentro del límite.
 export function rateLimit(key, max, windowMs) {
   const now = Date.now();
   let b = buckets.get(key);
@@ -90,6 +98,9 @@ export function rateLimit(key, max, windowMs) {
   if (buckets.size > 50000) for (const [k, v] of buckets) if (v.reset < now) buckets.delete(k);
   return b.n <= max;
 }
+// Consulta sin contar (para límites que solo cuentan fallos) y borrado al tener éxito.
+export const limiteExcedido = (key, max) => { const b = buckets.get(key); return !!b && b.reset >= Date.now() && b.n >= max; };
+export const limiteLimpiar = key => { buckets.delete(key); };
 
 // ---------- Bitácora encadenada (cualquier alteración rompe la cadena) ----------
 const GENESIS = '0'.repeat(64);

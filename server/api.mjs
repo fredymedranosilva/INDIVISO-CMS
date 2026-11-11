@@ -1,19 +1,21 @@
 // API por condominio. Cada ruta declara el permiso requerido; cada escritura corre en una
 // transacción y deja rastro en la bitácora encadenada dentro de la misma transacción.
-import { writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { tx, DATA_DIR } from './db.mjs';
+import { tx, DB_PATH, FILES_DIR } from './db.mjs';
 import { audit, sha256, token, hashPassword, verifyAuditChain, rateLimit as rl } from './security.mjs';
 import { fail, v, hoy, periodoDe, periodoActual, addMonths, finDeMes, mask } from './util.mjs';
 import * as F from './finanzas.mjs';
 import * as R from './reportes.mjs';
-import { membresias } from './auth.mjs';
-import { crearRespaldo, verificarRespaldo, rutaRespaldo } from './backup.mjs';
+import { membresias, revocarSesionesDe, TEMPORAL_MS } from './auth.mjs';
+import { crearRespaldo, verificarRespaldo, rutaRespaldo, BACKUP_DIR } from './backup.mjs';
 import { importar, catalogosPlantilla } from './importar.mjs';
 import { rutasComunidad } from './comunidad.mjs';
 
-const FILES_DIR = join(DATA_DIR, 'archivos');
-mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 });
+
+export const VERSION = '2.0.0';
+// Texto sin acentos ni mayúsculas, para buscar «garcia» y encontrar «García».
+const plano = x => String(x ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 // ---------- Permisos ----------
 const PERMS = {
@@ -88,12 +90,15 @@ const FIRMAS = [
   ['image/jpeg', b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
   ['application/xml', b => /^﻿?\s*<(\?xml|cfdi:Comprobante)/.test(b.subarray(0, 200).toString('utf8'))],
 ];
-function guardarArchivo(ctx, nombre, base64) {
+function guardarArchivo(ctx, nombre, base64, { soloImagen = false } = {}) {
   if (typeof base64 !== 'string' || base64.length > 7_000_000) fail(413, 'El archivo excede 5 MB.');
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) fail(400, 'Archivo inválido.');
   const buf = Buffer.from(base64, 'base64');
   if (!buf.length) fail(400, 'Archivo vacío.');
   const tipo = FIRMAS.find(([, test]) => test(buf));
   if (!tipo) fail(415, 'Solo se aceptan PDF, PNG, JPG o XML de CFDI.');
+  if (soloImagen && !tipo[0].startsWith('image/')) fail(415, 'El logotipo debe ser una imagen PNG o JPG.');
+  if (soloImagen && buf.length > 1_000_000) fail(413, 'El logotipo excede 1 MB.');
   const h = sha256(buf);
   const prev = ctx.db.prepare('SELECT id FROM archivos WHERE condominio_id = ? AND sha256 = ?').get(ctx.cid, h);
   if (prev) return prev.id; // el mismo archivo no se almacena dos veces
@@ -184,6 +189,136 @@ export const apiRoutes = [
     if (!ctx.user.superadmin && !membresias(ctx.db, ctx.user).some(m => PERMS.auditoria.includes(m.rol))) fail(403, 'Sin permiso.');
     return verifyAuditChain(ctx.db);
   }],
+
+  // ===== Administración general (solo superadministrador): condominios, usuarios, bitácora global y estado del sistema =====
+  ['GET', '/api/admin/condominios', {}, ctx => {
+    soloSuper(ctx);
+    return ctx.db.prepare(`SELECT c.id, c.nombre, c.razon_social, c.rfc, c.ciudad, c.activo, c.created_at,
+      (SELECT COUNT(*) FROM unidades u WHERE u.condominio_id = c.id AND u.activo = 1) AS unidades,
+      (SELECT COUNT(*) FROM membresias m WHERE m.condominio_id = c.id) AS usuarios,
+      (SELECT MAX(ts) FROM auditoria a WHERE a.condominio_id = c.id) AS ultima_actividad
+      FROM condominios c ORDER BY c.activo DESC, c.nombre`).all();
+  }],
+  ['PUT', '/api/admin/condominios/:id', {}, ctx => {
+    soloSuper(ctx);
+    const id = idParam(ctx), b = v(ctx.body, { activo: 'bool' });
+    ctx.db.prepare('SELECT 1 FROM condominios WHERE id = ?').get(id) || fail(404, 'Condominio no encontrado');
+    return tx(ctx.db, () => {
+      ctx.db.prepare('UPDATE condominios SET activo = ? WHERE id = ?').run(b.activo ? 1 : 0, id);
+      audit(ctx.db, { usuario_id: ctx.user.id, condominio_id: id, ip: ctx.ip, accion: b.activo ? 'condominio_reactivado' : 'condominio_archivado', entidad: 'condominio', entidad_id: id });
+      return { id };
+    });
+  }],
+  ['GET', '/api/admin/usuarios', {}, ctx => {
+    soloSuper(ctx);
+    const ms = ctx.db.prepare('SELECT m.usuario_id, m.rol, c.id AS condominio_id, c.nombre FROM membresias m JOIN condominios c ON c.id = m.condominio_id ORDER BY c.nombre').all();
+    const ses = ctx.db.prepare('SELECT COUNT(*) n FROM sesiones WHERE usuario_id = ? AND revocada = 0 AND expires_at > ?');
+    return ctx.db.prepare('SELECT id, nombre, email, superadmin, activo, totp_activo, ultimo_acceso, bloqueado_hasta, debe_cambiar_pass, created_at FROM usuarios ORDER BY activo DESC, nombre').all()
+      .map(u => ({ ...u, sesiones: ses.get(u.id, Date.now()).n, accesos: ms.filter(m => m.usuario_id === u.id).map(m => ({ condominio_id: m.condominio_id, condominio: m.nombre, rol: m.rol })) }));
+  }],
+  ['PUT', '/api/admin/usuarios/:id', {}, ctx => {
+    soloSuper(ctx);
+    const uid = idParam(ctx), b = v(ctx.body, { activo: 'bool' });
+    if (uid === ctx.user.id) fail(400, 'No puede desactivar su propia cuenta.');
+    const u = ctx.db.prepare('SELECT id, email FROM usuarios WHERE id = ?').get(uid) || fail(404, 'Usuario no encontrado');
+    return tx(ctx.db, () => {
+      ctx.db.prepare('UPDATE usuarios SET activo = ?, intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = ?').run(b.activo ? 1 : 0, uid);
+      if (!b.activo) revocarSesionesDe(ctx.db, uid);
+      audit(ctx.db, { usuario_id: ctx.user.id, ip: ctx.ip, accion: b.activo ? 'usuario_reactivado' : 'usuario_desactivado', entidad: 'usuario', entidad_id: uid, detalle: { usuario: u.email } });
+      return { id: uid };
+    });
+  }],
+  ['POST', '/api/admin/usuarios/:id/:accion', {}, ctx => {
+    soloSuper(ctx);
+    const uid = idParam(ctx), accion = ctx.params.accion;
+    if (uid === ctx.user.id) fail(400, 'Use «Mi cuenta» para su propia contraseña, sesiones y verificación en dos pasos.');
+    const u = ctx.db.prepare('SELECT id, email FROM usuarios WHERE id = ?').get(uid) || fail(404, 'Usuario no encontrado');
+    return tx(ctx.db, () => {
+      let out = { id: uid };
+      if (accion === 'restablecer') {
+        const temporal = token(12) + 'aA1!';
+        ctx.db.prepare('UPDATE usuarios SET pass_hash = ?, debe_cambiar_pass = 1, pass_temporal_hasta = ?, intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = ?').run(hashPassword(temporal), Date.now() + TEMPORAL_MS, uid);
+        revocarSesionesDe(ctx.db, uid); out.password_temporal = temporal;
+      } else if (accion === 'restablecer-2fa') {
+        ctx.db.prepare('UPDATE usuarios SET totp_activo = 0, totp_secret = NULL, totp_ultimo_paso = NULL WHERE id = ?').run(uid);
+        ctx.db.prepare('DELETE FROM totp_respaldo WHERE usuario_id = ?').run(uid);
+        revocarSesionesDe(ctx.db, uid);
+      } else if (accion === 'cerrar-sesiones') out.cerradas = revocarSesionesDe(ctx.db, uid);
+      else if (accion === 'desbloquear') ctx.db.prepare('UPDATE usuarios SET intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = ?').run(uid);
+      else fail(404, 'Acción desconocida');
+      audit(ctx.db, { usuario_id: ctx.user.id, ip: ctx.ip, accion: `admin_${accion.replaceAll('-', '_')}`, entidad: 'usuario', entidad_id: uid, detalle: { usuario: u.email } });
+      return out;
+    });
+  }],
+  // Bitácora global: incluye accesos, bloqueos y eventos que no pertenecen a un condominio.
+  ['GET', '/api/admin/auditoria', {}, ctx => {
+    soloSuper(ctx);
+    const lim = Math.min(qInt(ctx, 'limit', 200), 1000), off = qInt(ctx, 'offset', 0);
+    const where = ['1 = 1'], args = [];
+    if (q(ctx, 'accion')) { where.push("a.accion LIKE ? ESCAPE '\\'"); args.push(likeSeguro(q(ctx, 'accion').slice(0, 40))); }
+    if (q(ctx, 'usuario')) { where.push('a.usuario_id = ?'); args.push(qInt(ctx, 'usuario')); }
+    if (q(ctx, 'condominio')) { where.push('a.condominio_id = ?'); args.push(qInt(ctx, 'condominio')); }
+    if (q(ctx, 'seguridad') === '1') where.push("a.accion IN ('login_fallido','cuenta_bloqueada','acceso_denegado','mfa_fallido','login_temporal_vencida','cambio_password_fallido','mfa_desactivacion_fallida','mfa_activacion_fallida','mfa_codigos_fallido')");
+    return ctx.db.prepare(`SELECT a.id, a.ts, a.ip, a.accion, a.entidad, a.entidad_id, a.detalle, a.hash, u.nombre AS usuario, c.nombre AS condominio
+      FROM auditoria a LEFT JOIN usuarios u ON u.id = a.usuario_id LEFT JOIN condominios c ON c.id = a.condominio_id WHERE ${where.join(' AND ')} ORDER BY a.id DESC LIMIT ? OFFSET ?`).all(...args, lim, off);
+  }],
+  ['GET', '/api/admin/estado', {}, ctx => {
+    soloSuper(ctx);
+    const now = Date.now(), uno = k => ctx.db.prepare(k).get();
+    const tam = f => { try { return statSync(f).size; } catch { return 0; } };
+    let archivosBytes = 0, archivosN = 0;
+    try { for (const f of readdirSync(FILES_DIR)) { archivosBytes += tam(join(FILES_DIR, f)); archivosN++; } } catch { /* sin carpeta */ }
+    const ultimo = ctx.db.prepare('SELECT archivo, created_at, verificado, bytes FROM respaldos ORDER BY id DESC LIMIT 1').get() || null;
+    return {
+      version: VERSION, node: process.version, iniciado: now - Math.round(process.uptime() * 1000),
+      https: ctx.secure, base_bytes: tam(DB_PATH) + tam(DB_PATH + '-wal'), archivos: { n: archivosN, bytes: archivosBytes },
+      respaldos: { n: uno('SELECT COUNT(*) n FROM respaldos').n, ultimo, carpeta: BACKUP_DIR },
+      condominios: uno('SELECT COUNT(*) n FROM condominios WHERE activo = 1').n, usuarios: uno('SELECT COUNT(*) n FROM usuarios WHERE activo = 1').n,
+      sin_2fa: uno("SELECT COUNT(*) n FROM usuarios u WHERE u.activo = 1 AND u.totp_activo = 0 AND (u.superadmin = 1 OR EXISTS (SELECT 1 FROM membresias m WHERE m.usuario_id = u.id AND m.rol <> 'residente'))").n,
+      sesiones_activas: ctx.db.prepare('SELECT COUNT(*) n FROM sesiones WHERE revocada = 0 AND expires_at > ? AND last_seen > ?').get(now, now - 30 * 60000).n,
+      cuentas_bloqueadas: ctx.db.prepare('SELECT COUNT(*) n FROM usuarios WHERE bloqueado_hasta > ?').get(now).n,
+      accesos_fallidos_24h: ctx.db.prepare("SELECT COUNT(*) n FROM auditoria WHERE accion = 'login_fallido' AND ts > ?").get(now - 86400000).n,
+      denegados_24h: ctx.db.prepare("SELECT COUNT(*) n FROM auditoria WHERE accion = 'acceso_denegado' AND ts > ?").get(now - 86400000).n,
+      bitacora: uno('SELECT COUNT(*) n FROM auditoria').n,
+    };
+  }],
+
+  // ===== Buscador global del condominio =====
+  ['GET', `${C}/buscar`, { perm: 'ver' }, ctx => {
+    const t = (q(ctx, 'q') || '').trim().slice(0, 60);
+    if (t.length < 2) return { unidades: [], personas: [], pagos: [], egresos: [], proveedores: [] };
+    const n = plano(t), L = likeSeguro(t);
+    const folio = +(/^(?:[RE][- ]?)?(\d{1,9})$/i.exec(t)?.[1] ?? -1);
+    const unidades = ctx.db.prepare(`SELECT u.id, u.clave, u.torre, u.referencia, (SELECT GROUP_CONCAT(p.nombre, ', ') FROM unidad_personas up JOIN personas p ON p.id = up.persona_id WHERE up.unidad_id = u.id) AS personas
+      FROM unidades u WHERE u.condominio_id = ? ORDER BY u.torre, u.clave`).all(ctx.cid)
+      .filter(u => plano(u.clave).includes(n) || plano(u.referencia).includes(n) || plano(u.personas).includes(n) || plano(`${u.torre || ''} ${u.clave}`).includes(n)).slice(0, 6);
+    const personas = ctx.db.prepare(`SELECT p.id, p.nombre, p.email, p.telefono, (SELECT MIN(up.unidad_id) FROM unidad_personas up WHERE up.persona_id = p.id) AS unidad_id,
+      (SELECT GROUP_CONCAT(u.clave, ', ') FROM unidad_personas up JOIN unidades u ON u.id = up.unidad_id WHERE up.persona_id = p.id) AS unidades FROM personas p WHERE p.condominio_id = ? AND p.activo = 1 ORDER BY p.nombre`).all(ctx.cid)
+      .filter(p => plano(p.nombre).includes(n) || plano(p.email).includes(n) || (p.telefono || '').replace(/\D/g, '').includes(t.replace(/\D/g, '') || '\u0000')).slice(0, 6);
+    const proveedores = ctx.db.prepare('SELECT id, nombre, rfc, giro FROM proveedores WHERE condominio_id = ? ORDER BY nombre').all(ctx.cid)
+      .filter(p => plano(p.nombre).includes(n) || plano(p.rfc).includes(n) || plano(p.giro).includes(n)).slice(0, 5);
+    const pagos = ctx.db.prepare(`SELECT p.id, p.folio, p.fecha, p.monto_cents, p.estado, p.referencia, p.unidad_id, u.clave FROM pagos p JOIN unidades u ON u.id = p.unidad_id
+      WHERE p.condominio_id = ? AND p.idem_key NOT LIKE 'INI-%' AND (p.folio = ? OR p.referencia LIKE ? ESCAPE '\\') ORDER BY p.fecha DESC, p.id DESC LIMIT 6`).all(ctx.cid, folio, L);
+    const egresos = ctx.db.prepare(`SELECT e.id, e.folio, e.fecha, e.concepto, e.total_cents, e.estado, pr.nombre AS proveedor FROM egresos e LEFT JOIN proveedores pr ON pr.id = e.proveedor_id
+      WHERE e.condominio_id = ? AND (e.folio = ? OR e.concepto LIKE ? ESCAPE '\\' OR pr.nombre LIKE ? ESCAPE '\\' OR e.factura_folio LIKE ? ESCAPE '\\') ORDER BY e.fecha DESC, e.id DESC LIMIT 6`).all(ctx.cid, folio, L, L, L);
+    return { unidades, personas, pagos, egresos, proveedores };
+  }],
+
+  // ===== Logotipo del condominio (interfaz y reportes) =====
+  ['GET', `${C}/logo`, {}, ctx => {
+    const a = ctx.db.prepare('SELECT a.* FROM condominios c JOIN archivos a ON a.id = c.logo_archivo_id WHERE c.id = ? AND a.condominio_id = c.id').get(ctx.cid) || fail(404, 'Sin logotipo');
+    return { __file: { path: join(FILES_DIR, a.sha256), name: a.nombre, mime: a.mime, inline: true } };
+  }],
+  ['PUT', `${C}/logo`, { perm: 'config', limite: 1_500_000 }, ctx => {
+    const b = v(ctx.body, { nombre: 'str|max160', base64: 'str|max1400000' });
+    ctx.auditDetalle = { nombre: b.nombre };
+    return escribir(ctx, 'logo_actualizado', 'condominio', () => {
+      const id = guardarArchivo(ctx, b.nombre, b.base64, { soloImagen: true });
+      ctx.db.prepare('UPDATE condominios SET logo_archivo_id = ? WHERE id = ?').run(id, ctx.cid);
+      return ctx.cid;
+    });
+  }],
+  ['DELETE', `${C}/logo`, { perm: 'config' }, ctx => escribir(ctx, 'logo_eliminado', 'condominio', () => { ctx.db.prepare('UPDATE condominios SET logo_archivo_id = NULL WHERE id = ?').run(ctx.cid); return ctx.cid; })],
 
   // ===== Tablero y configuración =====
   ['GET', `${C}/tablero`, { perm: 'ver' }, ctx => R.tablero(ctx.db, ctx.cid, qPeriodo(ctx, 'periodo', periodoActual()))],
@@ -711,6 +846,12 @@ export const apiRoutes = [
     return escribir(ctx, 'ejercicio_cerrado', 'ejercicio', () => F.cerrarEjercicio(ctx.db, ctx.cid, anio, ctx.user));
   }],
 
+  ['POST', `${C}/ejercicios/:anio/reabrir`, {}, ctx => {
+    if (!ctx.user.superadmin) fail(403, 'Solo el superadministrador puede reabrir un ejercicio.');
+    const b = v(ctx.body, { motivo: 'str|max200' });
+    return escribir(ctx, 'ejercicio_reabierto', 'ejercicio', () => F.reabrirEjercicio(ctx.db, ctx.cid, idParam(ctx, 'anio'), b.motivo, ctx.user));
+  }],
+
   // ===== Auditoría y usuarios =====
   ['GET', `${C}/auditoria`, { perm: 'auditoria' }, ctx => {
     const lim = Math.min(qInt(ctx, 'limit', 100), 500), off = qInt(ctx, 'offset', 0);
@@ -726,12 +867,40 @@ export const apiRoutes = [
     const r = escribir(ctx, 'usuario_invitado', 'usuario', () => {
       let u = ctx.db.prepare('SELECT id FROM usuarios WHERE email = ?').get(b.email);
       let nuevo = false;
-      if (!u) { u = { id: Number(ctx.db.prepare('INSERT INTO usuarios (email, nombre, pass_hash, created_at) VALUES (?,?,?,?)').run(b.email, b.nombre, hashPassword(temporal), Date.now()).lastInsertRowid) }; nuevo = true; }
+      if (!u) { u = { id: Number(ctx.db.prepare('INSERT INTO usuarios (email, nombre, pass_hash, debe_cambiar_pass, pass_temporal_hasta, created_at) VALUES (?,?,?,1,?,?)').run(b.email, b.nombre, hashPassword(temporal), Date.now() + TEMPORAL_MS, Date.now()).lastInsertRowid) }; nuevo = true; }
       if (ctx.db.prepare('SELECT 1 FROM membresias WHERE usuario_id = ? AND condominio_id = ?').get(u.id, ctx.cid)) fail(409, 'El usuario ya tiene acceso a este condominio.');
       ctx.db.prepare('INSERT INTO membresias (usuario_id, condominio_id, rol, persona_id) VALUES (?,?,?,?)').run(u.id, ctx.cid, b.rol, b.persona_id);
       return { id: u.id, nuevo };
     });
     return { ...r, password_temporal: r.nuevo ? temporal : null }; // se muestra una sola vez
+  }],
+  // Restablecer contraseña: genera una temporal (vence en 7 días y debe cambiarse al entrar) y cierra las sesiones del usuario.
+  ['POST', `${C}/usuarios/:id/restablecer`, { perm: 'usuarios' }, ctx => {
+    const u = usuarioAdministrable(ctx, idParam(ctx));
+    const temporal = token(12) + 'aA1!';
+    ctx.auditDetalle = { usuario: u.email };
+    escribir(ctx, 'password_restablecida', 'usuario', () => {
+      ctx.db.prepare('UPDATE usuarios SET pass_hash = ?, debe_cambiar_pass = 1, pass_temporal_hasta = ?, intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = ?').run(hashPassword(temporal), Date.now() + TEMPORAL_MS, u.id);
+      revocarSesionesDe(ctx.db, u.id);
+      return u.id;
+    });
+    return { id: u.id, password_temporal: temporal };
+  }],
+  // Quitar la verificación en dos pasos de un usuario que perdió su teléfono y sus códigos de respaldo.
+  ['POST', `${C}/usuarios/:id/restablecer-2fa`, { perm: 'usuarios' }, ctx => {
+    const u = usuarioAdministrable(ctx, idParam(ctx));
+    ctx.auditDetalle = { usuario: u.email };
+    return escribir(ctx, 'mfa_restablecido', 'usuario', () => {
+      ctx.db.prepare('UPDATE usuarios SET totp_activo = 0, totp_secret = NULL, totp_ultimo_paso = NULL WHERE id = ?').run(u.id);
+      ctx.db.prepare('DELETE FROM totp_respaldo WHERE usuario_id = ?').run(u.id);
+      revocarSesionesDe(ctx.db, u.id);
+      return u.id;
+    });
+  }],
+  ['POST', `${C}/usuarios/:id/desbloquear`, { perm: 'usuarios' }, ctx => {
+    const u = usuarioAdministrable(ctx, idParam(ctx));
+    ctx.auditDetalle = { usuario: u.email };
+    return escribir(ctx, 'cuenta_desbloqueada', 'usuario', () => { ctx.db.prepare('UPDATE usuarios SET intentos_fallidos = 0, bloqueado_hasta = NULL WHERE id = ?').run(u.id); return u.id; });
   }],
   ['PUT', `${C}/usuarios/:id`, { perm: 'usuarios' }, ctx => {
     const uid = idParam(ctx);
@@ -776,7 +945,21 @@ export const apiRoutes = [
 
 apiRoutes.push(...rutasComunidad({ C, PERMS, escribir, exigir, idParam, q, unidadesDeResidente }));
 
-const datosCondo = c => ({ nombre: c.nombre, razon_social: c.razon_social, rfc: c.rfc, direccion: c.direccion, ciudad: c.ciudad, dia_vencimiento: c.dia_vencimiento, dias_gracia: c.dias_gracia,
+// Un administrador solo restablece cuentas que controla por completo: el usuario debe pertenecer a este condominio,
+// no ser superadministrador y no tener acceso a condominios donde quien actúa no es administrador.
+function usuarioAdministrable(ctx, uid) {
+  if (uid === ctx.user.id) fail(400, 'Use «Mi cuenta» para su propia contraseña y verificación en dos pasos.');
+  const u = ctx.db.prepare('SELECT u.* FROM usuarios u JOIN membresias m ON m.usuario_id = u.id WHERE u.id = ? AND m.condominio_id = ?').get(uid, ctx.cid) || fail(404, 'Usuario no encontrado');
+  if (ctx.user.superadmin) return u;
+  if (u.superadmin) fail(403, 'Solo el superadministrador puede restablecer esta cuenta.');
+  const ajenos = ctx.db.prepare(`SELECT COUNT(*) n FROM membresias m WHERE m.usuario_id = ? AND NOT EXISTS (SELECT 1 FROM membresias a WHERE a.usuario_id = ? AND a.condominio_id = m.condominio_id AND a.rol = 'admin')`).get(u.id, ctx.user.id).n;
+  if (ajenos) fail(403, 'Este usuario tiene acceso a otros condominios: solo el superadministrador puede restablecer su cuenta.');
+  return u;
+}
+const soloSuper = ctx => { if (!ctx.user.superadmin) fail(403, 'Solo el superadministrador tiene acceso a la administración general.'); };
+const likeSeguro = t => '%' + String(t).replace(/[\\%_]/g, c => '\\' + c) + '%';
+
+const datosCondo = c => ({ id: c.id, nombre: c.nombre, razon_social: c.razon_social, rfc: c.rfc, direccion: c.direccion, ciudad: c.ciudad, logo: !!c.logo_archivo_id, dia_vencimiento: c.dia_vencimiento, dias_gracia: c.dias_gracia,
   tasa_recargo_bp: c.tasa_recargo_bp, recargo_modo: c.recargo_modo, recargo_fijo_cents: c.recargo_fijo_cents, pronto_pago_bp: c.pronto_pago_bp, pronto_pago_dia: c.pronto_pago_dia });
 
 function reciboDe(ctx, p) {

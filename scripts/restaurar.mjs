@@ -4,7 +4,7 @@
 import { readFileSync, writeFileSync, existsSync, rmSync, renameSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { descifrar } from '../server/backup.mjs';
+import { descifrar, restaurarAdjuntos } from '../server/backup.mjs';
 import { DB_PATH, DATA_DIR } from '../server/db.mjs';
 
 const [archivo, flag] = process.argv.slice(2);
@@ -30,7 +30,8 @@ if (flag === '--aplicar') {
   }
   for (const s of ['-wal', '-shm']) rmSync(DB_PATH + s, { force: true });
   renameSync(destino, DB_PATH);
-  console.log('Base restaurada. Inicie de nuevo el servidor.');
+  const adj = restaurarAdjuntos();
+  console.log(`Base restaurada. Adjuntos recuperados: ${adj.restaurados}${adj.danados ? ` · dañados: ${adj.danados}` : ''}. Inicie de nuevo el servidor.`);
 } else {
   console.log('Para reemplazar la base: detenga el servidor y repita con --aplicar.');
 }

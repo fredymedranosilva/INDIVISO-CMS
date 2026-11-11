@@ -7,6 +7,8 @@ import { join } from 'node:path';
 export const DATA_DIR = process.env.INDIVISO_DATA || join(import.meta.dirname, '..', 'data');
 mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 export const DB_PATH = join(DATA_DIR, 'indiviso.db');
+export const FILES_DIR = join(DATA_DIR, 'archivos'); // adjuntos (comprobantes, facturas, documentos), nombrados por su sha256
+mkdirSync(FILES_DIR, { recursive: true, mode: 0o700 });
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
@@ -395,6 +397,24 @@ CREATE TABLE IF NOT EXISTS encuesta_votos (
 CREATE TRIGGER IF NOT EXISTS t_voto_no_upd BEFORE UPDATE ON encuesta_votos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: un voto emitido no se modifica'); END;
 CREATE TRIGGER IF NOT EXISTS t_voto_no_del BEFORE DELETE ON encuesta_votos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: un voto emitido no se elimina'); END;
 
+-- ===== Códigos de respaldo de la verificación en dos pasos (solo hashes; un solo uso) =====
+CREATE TABLE IF NOT EXISTS totp_respaldo (
+  id INTEGER PRIMARY KEY,
+  usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+  hash TEXT NOT NULL,
+  usado_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_totp_respaldo ON totp_respaldo(usuario_id, hash);
+
+-- ===== Índices para consultas por condominio y periodo =====
+CREATE INDEX IF NOT EXISTS ix_sesiones_usuario ON sesiones(usuario_id);
+CREATE INDEX IF NOT EXISTS ix_cargos_condo_periodo ON cargos(condominio_id, periodo);
+CREATE INDEX IF NOT EXISTS ix_pagos_condo_fecha ON pagos(condominio_id, fecha);
+CREATE INDEX IF NOT EXISTS ix_egresos_condo_fecha ON egresos(condominio_id, fecha);
+CREATE INDEX IF NOT EXISTS ix_aud_condo ON auditoria(condominio_id, id);
+CREATE INDEX IF NOT EXISTS ix_banco_movs_cuenta ON banco_movs(cuenta_banco_id, fecha);
+
 -- ===== Inmutabilidad: lo contabilizado no se edita ni se borra; se revierte. =====
 CREATE TRIGGER IF NOT EXISTS t_mov_no_upd BEFORE UPDATE ON movimientos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: los movimientos contables no se modifican'); END;
 CREATE TRIGGER IF NOT EXISTS t_mov_no_del BEFORE DELETE ON movimientos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: los movimientos contables no se eliminan'); END;
@@ -404,8 +424,9 @@ CREATE TRIGGER IF NOT EXISTS t_pol_upd BEFORE UPDATE ON polizas
         AND NEW.id = OLD.id AND NEW.fecha = OLD.fecha AND NEW.periodo = OLD.periodo AND NEW.total_cents = OLD.total_cents
         AND NEW.concepto = OLD.concepto AND NEW.folio = OLD.folio AND NEW.tipo = OLD.tipo AND NEW.condominio_id = OLD.condominio_id)
   BEGIN SELECT RAISE(ABORT, 'INMUTABLE: la póliza solo puede marcarse como revertida'); END;
-CREATE TRIGGER IF NOT EXISTS t_pol_periodo BEFORE INSERT ON polizas
-  WHEN EXISTS (SELECT 1 FROM periodos p WHERE p.condominio_id = NEW.condominio_id AND p.periodo = NEW.periodo AND p.estado = 'cerrado')
+CREATE TRIGGER IF NOT EXISTS t_pol_periodo2 BEFORE INSERT ON polizas
+  WHEN NEW.origen NOT IN ('cierre_ejercicio','reapertura_ejercicio')
+    AND EXISTS (SELECT 1 FROM periodos p WHERE p.condominio_id = NEW.condominio_id AND p.periodo = NEW.periodo AND p.estado = 'cerrado')
   BEGIN SELECT RAISE(ABORT, 'PERIODO_CERRADO: el periodo contable está cerrado'); END;
 CREATE TRIGGER IF NOT EXISTS t_cargo_no_del BEFORE DELETE ON cargos BEGIN SELECT RAISE(ABORT, 'INMUTABLE: los cargos no se eliminan; se cancelan'); END;
 CREATE TRIGGER IF NOT EXISTS t_cargo_upd BEFORE UPDATE ON cargos
@@ -465,11 +486,17 @@ const COLUMNAS = [
   // recargos: «saldo» = % sobre el saldo vencido · «cuota» = % sobre cada cuota vencida · «fijo» = monto por cuota vencida
   ['condominios', 'recargo_modo', "TEXT NOT NULL DEFAULT 'saldo' CHECK (recargo_modo IN ('saldo','cuota','fijo'))"],
   ['condominios', 'recargo_fijo_cents', 'INTEGER NOT NULL DEFAULT 0 CHECK (recargo_fijo_cents >= 0)'],
+  // seguridad: contraseña temporal de un solo uso (el usuario debe cambiarla al entrar) y su vigencia
+  ['usuarios', 'debe_cambiar_pass', 'INTEGER NOT NULL DEFAULT 0'],
+  ['usuarios', 'pass_temporal_hasta', 'INTEGER'],
+  // identidad: logotipo del condominio para la interfaz y los reportes
+  ['condominios', 'logo_archivo_id', 'INTEGER REFERENCES archivos(id)'],
 ];
 function migrar(db) {
   for (const [t, c, def] of COLUMNAS) {
     if (!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
   }
+  db.exec('DROP TRIGGER IF EXISTS t_pol_periodo'); // sustituido por t_pol_periodo2 (permite asentar el cierre de ejercicio)
 }
 
 // Transacción con bloqueo de escritura inmediato: serializa folios y evita carreras.
