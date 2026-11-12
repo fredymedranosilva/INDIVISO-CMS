@@ -36,8 +36,11 @@ function aplicarTema(t) { document.documentElement.dataset.theme = t; store.set(
 aplicarTema(store.get('idv-tema') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 
 // ---------- Acceso ----------
-function pantallaAcceso(mfa = false) {
+async function pantallaAcceso(mfa = false) {
   const root = $('#root');
+  // Primera vez en un servidor nuevo: se crea el superadministrador desde aquí.
+  let instalar = false;
+  if (!mfa) { try { instalar = !!(await api('/api/instalacion')).pendiente; } catch { /* servidor sin instalador */ } }
   const celdas = Array.from({ length: 72 }, (_, i) => (i * 37) % 11 === 0 ? 'b' : (i * 13) % 5 === 0 ? 'p' : '');
   mount(root, html`<main class="auth">
     <section class="auth-art">
@@ -55,6 +58,17 @@ function pantallaAcceso(mfa = false) {
           <button class="btn primary">Verificar</button>
           <button class="link" type="button" data-salir>Usar otra cuenta</button>
         </form>`
+      : instalar ? html`<form id="f-instalar" novalidate>
+          <h2>Instalación</h2>
+          <p class="lead">Cree la cuenta de superadministrador. Con ella dará de alta condominios y usuarios.</p>
+          <label class="field"><span>Nombre</span><input name="nombre" autocomplete="name" required autofocus maxlength="120"></label>
+          <label class="field"><span>Correo</span><input name="email" type="email" autocomplete="username" required></label>
+          <label class="field"><span>Contraseña (12 caracteres o más)</span><input name="password" type="password" autocomplete="new-password" required minlength="12"></label>
+          <label class="field"><span>Repita la contraseña</span><input name="password2" type="password" autocomplete="new-password" required></label>
+          <p class="dlg-error" role="alert" hidden></p>
+          <button class="btn primary">Crear y entrar</button>
+          <p class="fine">Combine mayúsculas, minúsculas, números o símbolos. Después active la verificación en dos pasos en Seguridad.</p>
+        </form>`
       : html`<form id="f-login" novalidate>
           <h2>Iniciar sesión</h2>
           <label class="field"><span>Correo</span><input name="email" type="email" autocomplete="username" required autofocus></label>
@@ -70,6 +84,11 @@ function pantallaAcceso(mfa = false) {
     const b = $('button.primary', f); b.disabled = true;
     try {
       if (mfa) { await api('/api/auth/mfa', { method: 'POST', body: { code: val(f, 'code') } }); }
+      else if (instalar) {
+        if (f.password.value !== f.password2.value) throw new Error('Las contraseñas no coinciden.');
+        await api('/api/instalacion', { method: 'POST', body: { nombre: val(f, 'nombre'), email: val(f, 'email'), password: f.password.value } });
+        await api('/api/auth/login', { method: 'POST', body: { email: val(f, 'email'), password: f.password.value } });
+      }
       else {
         const r = await api('/api/auth/login', { method: 'POST', body: { email: val(f, 'email'), password: f.password.value } });
         if (r.mfa) { await cargarSesion(); return pantallaAcceso(true); }

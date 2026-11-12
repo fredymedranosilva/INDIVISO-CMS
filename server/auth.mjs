@@ -122,6 +122,20 @@ function fallo(ctx, clave, accion, msg, status = 401) {
 }
 
 export const authRoutes = [
+  // Instalación: mientras no exista ningún usuario, la pantalla de acceso permite crear al superadministrador.
+  ['GET', '/api/instalacion', { publico: true }, ctx => ({ pendiente: !ctx.db.prepare('SELECT 1 FROM usuarios LIMIT 1').get(), version: '2.0.0', motor: 'node' })],
+  ['POST', '/api/instalacion', { publico: true }, ctx => {
+    if (!rateLimit('instalar:' + ctx.ip, 10, 3600000)) fail(429, 'Demasiados intentos.');
+    const b = v(ctx.body, { nombre: 'str|max120', email: 'email', password: 'str|max128' });
+    const p = passwordProblem(b.password, b.email); if (p) fail(400, p);
+    return tx(ctx.db, () => {
+      if (ctx.db.prepare('SELECT 1 FROM usuarios LIMIT 1').get()) fail(409, 'El sistema ya fue instalado. Inicie sesión.');
+      const now = Date.now();
+      const id = Number(ctx.db.prepare('INSERT INTO usuarios (email, nombre, pass_hash, superadmin, created_at, pass_cambiado_at) VALUES (?,?,?,1,?,?)').run(b.email, b.nombre, hashPassword(b.password), now, now).lastInsertRowid);
+      audit(ctx.db, { usuario_id: id, ip: ctx.ip, accion: 'instalacion', detalle: { motor: 'node' } });
+      return { ok: true };
+    });
+  }],
   ['POST', '/api/auth/login', { publico: true }, ctx => {
     // Por conexión solo cuentan los intentos fallidos: una oficina con muchos usuarios no se bloquea por entrar.
     const kIp = 'login:' + ctx.ip;

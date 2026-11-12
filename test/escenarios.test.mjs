@@ -11,7 +11,9 @@ import { servidor, Cliente, idem, PDF_B64 } from './apoyo.mjs';
 const DATA = mkdtempSync(join(tmpdir(), 'indiviso-esc-'));
 process.env.INDIVISO_DATA = DATA;
 const { openDb } = await import('../server/db.mjs');
-const { hashPassword, verifyAuditChain } = await import('../server/security.mjs');
+const { hashPassword: hashNode, verifyAuditChain } = await import('../server/security.mjs');
+const apoyo = await import('./apoyo.mjs');
+const hashPassword = apoyo.MOTOR === 'php' ? apoyo.hashPassword : hashNode;
 const { hoy, addMonths, periodoDe, finDeMes, addDays } = await import('../server/util.mjs');
 
 const db = openDb();

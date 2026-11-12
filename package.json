@@ -13,7 +13,9 @@
     "vacio": "node server/seed.mjs --vacio",
     "test": "node --test test/*.test.mjs",
     "demo:estatica": "node scripts/build-demo.mjs",
-    "hostinger": "sh scripts/paquete-hostinger.sh"
+    "hostinger": "sh scripts/paquete-hostinger.sh",
+    "test:php": "INDIVISO_MOTOR=php node --test test/seguridad.test.mjs test/escenarios.test.mjs",
+    "paquete:php": "sh scripts/paquete-php.sh"
   },
   "license": "UNLICENSED"
 }

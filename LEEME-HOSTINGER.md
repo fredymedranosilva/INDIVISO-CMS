@@ -1,24 +1,33 @@
 # Indiviso CMS en Hostinger
 
-## Requisito
-Plan con **Node.js web apps** (Business o Cloud). En planes de solo sitio web (Single/Premium) **no funciona**: no basta con subir el zip a `public_html` con el Administrador de archivos.
+Hay dos versiones; use la que corresponda a su plan.
 
-## Pasos
-1. hPanel → **Sitios web → Agregar sitio web → Node.js web app → Subir archivos** → suba `indiviso-cms-hostinger.zip` (sin descomprimir).
-2. Configuración:
-   - **Versión de Node:** 22 o 24
-   - **Archivo de entrada:** `app.js`
-   - **Comando de instalación/compilación:** déjelos vacíos (no hay dependencias)
-3. **Variables de entorno** (recomendado):
-   - `INDIVISO_ADMIN_EMAIL` = su correo
-   - `INDIVISO_ADMIN_PASSWORD` = una contraseña de 12+ caracteres con mayúsculas, minúsculas y números
-4. **Desplegar** y abrir el dominio. Entre con ese correo y contraseña.
+## A. Sin Node.js (planes Single / Premium / cualquier hosting con PHP) — `indiviso-cms-php.zip`
 
-Si no definió las variables: el usuario es `admin@indiviso.local` y la contraseña temporal aparece en los **registros (logs)** de la app; el sistema pide cambiarla al entrar.
+Requisitos: PHP 8.1 o superior (Hostinger trae 8.2/8.3) con SQLite. No necesita base de datos MySQL.
 
-## Datos
-Se guardan en `~/indiviso-datos` (fuera de la app), así que volver a desplegar no los borra. Respalde esa carpeta con regularidad; incluye las llaves `secreto.key` y `respaldo.key`.
+1. hPanel → **Archivos → Administrador de archivos** → entre a **public_html** del dominio.
+2. Borre lo que haya (por ejemplo `default.php`).
+3. Suba `indiviso-cms-php.zip` y use **Extraer** ahí mismo. En `public_html` deben quedar `index.html`, `api.php`, `.htaccess` y las carpetas `app`, `css`, `js`, `fonts`.
+   - Si no ve `.htaccess`, active «Mostrar archivos ocultos»; es indispensable.
+4. Abra su dominio. Aparece **Instalación**: escriba su nombre, correo y una contraseña de 12+ caracteres. Entra directo como superadministrador.
+5. Si el dominio no tiene candado (https), actívelo en hPanel → **Seguridad → SSL**.
 
-## Si no abre
-- Revise en el panel de la app la **versión de Node** (22 o 24) y el **archivo de entrada** (`app.js`).
-- Abra los **registros (logs)**: ahí aparece el motivo exacto.
+Los datos se guardan en `indiviso-datos`, junto a `public_html` (fuera del alcance de la web). Respalde esa carpeta; incluye las llaves `secreto.key` y `respaldo.key`.
+
+**Actualizar:** suba el zip nuevo y extraiga encima. Sus datos no se tocan.
+
+Si PHP es menor a 8.1: hPanel → **Avanzado → Configuración de PHP** → elija 8.2 o 8.3.
+
+## B. Con Node.js (planes Business / Cloud) — `indiviso-cms-hostinger.zip`
+
+hPanel → Agregar sitio web → **Node.js web app** → subir el zip · Node 22 o 24 · archivo de entrada `app.js` · desplegar. Al abrir el dominio aparece la misma pantalla de instalación.
+
+## Empezar a cargar datos reales
+1. **Administración general → Nuevo condominio**.
+2. **Unidades → Importar directorio** (cada departamento con su **código único**).
+3. **Unidades → Importar cuotas** (código + cuota mensual).
+4. **Unidades → Saldos iniciales**, **Bancos**, **Presupuesto** (cada rubro con código y tipo **Fijo/Variable**).
+5. **Cobranza → Importar pagos** o registrarlos a mano.
+
+Después active la verificación en dos pasos en **Seguridad**.

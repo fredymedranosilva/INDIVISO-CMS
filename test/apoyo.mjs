@@ -1,6 +1,6 @@
 // Apoyo para pruebas por HTTP: arranca el servidor real en un puerto libre con una base temporal
 // y ofrece un cliente que conserva la cookie de sesión y el token CSRF, como lo hace el navegador.
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -13,7 +13,27 @@ export const puertoLibre = () => new Promise((ok, ko) => {
   s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => ok(port)); });
 });
 
+// INDIVISO_MOTOR=php ejecuta las mismas pruebas contra la versión PHP (servidor integrado de PHP + router.php).
+export const MOTOR = process.env.INDIVISO_MOTOR === 'php' ? 'php' : 'node';
+// Hash de contraseña compatible con el motor en prueba (PHP usa password_hash; Node, scrypt).
+export function hashPassword(pass) {
+  if (MOTOR !== 'php') throw new Error('usar server/security.mjs');
+  return execFileSync('php', ['-r', 'echo password_hash(stream_get_contents(STDIN), defined("PASSWORD_ARGON2ID") ? PASSWORD_ARGON2ID : PASSWORD_BCRYPT);'], { input: pass }).toString();
+}
+async function servidorPhp(data, env) {
+  const port = await puertoLibre();
+  const proc = spawn('php', ['-d', 'variables_order=EGPCS', '-S', `127.0.0.1:${port}`, 'php/router.php'], { cwd: RAIZ, env: { ...process.env, INDIVISO_DATA: data, INDIVISO_RATE: '0', INDIVISO_DEBUG: '1', PHP_CLI_SERVER_WORKERS: '4', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const salida = [];
+  proc.stderr.on('data', d => salida.push(String(d))); proc.stdout.on('data', d => salida.push(String(d)));
+  for (let i = 0; i < 100; i++) {
+    try { await new Promise((ok, ko) => { const r = request({ host: '127.0.0.1', port, path: '/favicon.svg' }, res => { res.resume(); res.on('end', ok); }); r.on('error', ko); r.end(); }); break; }
+    catch { await new Promise(r => setTimeout(r, 100)); }
+  }
+  return { url: `http://127.0.0.1:${port}`, port, proc, salida, vivo: () => proc.exitCode === null, parar: () => new Promise(ok => { if (proc.exitCode !== null) return ok(); proc.once('exit', ok); proc.kill(); }) };
+}
+
 export async function servidor(data, env = {}) {
+  if (MOTOR === 'php') return servidorPhp(data, env);
   const port = await puertoLibre();
   const proc = spawn(process.execPath, ['--no-warnings', 'server/index.mjs'], { cwd: RAIZ, env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', INDIVISO_DATA: data, INDIVISO_RATE: '0', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   const salida = [];

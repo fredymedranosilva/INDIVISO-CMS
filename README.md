@@ -14,9 +14,13 @@ node --test test/*.test.mjs   # pruebas de integridad
 ```
 Usuarios de prueba y contraseñas: `data/credenciales-demo.txt`.
 
-## Hostinger
+## Hostinger y hosting compartido
 
-Ver [LEEME-HOSTINGER.md](LEEME-HOSTINGER.md). El paquete se genera con `npm run hostinger`.
+Dos servidores equivalentes con la misma API e interfaz: **Node.js** (`server/`) y **PHP 8.1+** (`php/`, para hosting sin Node). Ver [LEEME-HOSTINGER.md](LEEME-HOSTINGER.md).
+
+- `npm run paquete:php` → `indiviso-cms-php.zip` (se extrae en public_html).
+- `npm run hostinger` → `indiviso-cms-hostinger.zip` (Node.js web app).
+- `npm run test:php` corre las pruebas HTTP de seguridad y escenarios contra la versión PHP.
 
 ## Producción
 - `HOST=127.0.0.1 PORT=4300 INDIVISO_HTTPS=1 INDIVISO_TRUST_PROXY=1 node server/index.mjs`, detrás de Caddy/Nginx con HTTPS.
