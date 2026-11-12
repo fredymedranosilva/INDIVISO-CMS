@@ -8,15 +8,14 @@ export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'pagos').split('?');
   const q = new URLSearchParams(qs || '');
   cargando(el);
-  const t = await capi('/tablero');
-  const head = html`<div class="title-row"><div><h1>Cobranza</h1><p class="sub">Recibos, comprobantes reportados por residentes, emisión mensual y convenios de pago.</p></div>
-    <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarPagos">Importar desde Excel</button><button class="btn primary" data-action="pago">Registrar pago</button>` : ''}</div></div>
-    ${tabs([['pagos', 'Pagos'], ['validar', 'Por validar', t.pendientes.pagos_por_validar], ['emision', 'Emisión y recargos'], ['recurrentes', 'Adeudos recurrentes'], ['descuentos', 'Descuentos'], ['convenios', 'Convenios']], sub, ctx.base)}`;
+  const head = html`<div class="title-row"><div><h1>Cobranza</h1><p class="sub">Recibos, emisión mensual, recargos, descuentos y convenios de pago.</p></div>
+    <div class="actions">${puede('capturar') ? html`${puede('config') ? html`<button class="btn" data-action="importarCuotas">Importar cuotas</button>` : ''}<button class="btn" data-action="importarPagos">Importar pagos</button><button class="btn primary" data-action="pago">Registrar pago</button>` : ''}</div></div>
+    ${tabs([['pagos', 'Pagos'], ['emision', 'Emisión y recargos'], ['recurrentes', 'Adeudos recurrentes'], ['descuentos', 'Descuentos'], ['convenios', 'Convenios']], sub, ctx.base)}`;
   const cuerpo = html`<div id="cob-body"></div>`;
   mount(el, html`${head}${cuerpo}`);
   const body = $('#cob-body', el);
-  ctx.acciones({ pago: () => dialogoPago({ onOk: () => ctx.recargar() }), importarPagos: () => abrirImportacion('pagos', { onOk: () => ctx.recargar() }) });
-  await ({ pagos, validar, emision, recurrentes, descuentos, convenios }[sub] || pagos)(body, ctx, q);
+  ctx.acciones({ pago: () => dialogoPago({ onOk: () => ctx.recargar() }), importarPagos: () => abrirImportacion('pagos', { onOk: () => ctx.recargar() }), importarCuotas: () => abrirImportacion('cuotas', { onOk: () => { invalidar(); ctx.recargar(); } }) });
+  await ({ pagos, emision, recurrentes, descuentos, convenios }[sub] || pagos)(body, ctx, q);
 }
 
 async function pagos(el, ctx, q) {
@@ -51,35 +50,6 @@ async function pagos(el, ctx, q) {
       const motivo = await pedirMotivo(`Cancelar recibo R-${d.folio}`, 'Se registrará una contrapóliza que revierte el cobro y reabre los cargos que pagó. El recibo original se conserva como cancelado.', 'Cancelar recibo');
       if (!motivo) return;
       await capi(`/pagos/${d.id}/cancelar`, { method: 'POST', body: { motivo } }); invalidar(); toast('Recibo cancelado y revertido.'); ctx.recargar();
-    },
-  });
-}
-
-async function validar(el, ctx) {
-  const [rows, bs] = await Promise.all([capi('/pagos?estado=por_validar'), bancos()]);
-  mount(el, html`<section class="panel flush">
-    <header><h2>Pagos reportados por residentes</h2><span class="meta">Revise el comprobante contra el estado de cuenta bancario antes de aceptar.</span></header>
-    ${tabla([
-      { t: 'Reportado', k: r => fecha(r.fecha), cls: 'nowrap' },
-      { t: 'Unidad', k: r => html`<a class="link" href="#/c/${S.cid}/unidades/${r.unidad_id}">${r.clave}</a>` },
-      { t: 'Método', k: r => html`${METODOS[r.metodo]}<span class="sub-t">${r.referencia || 'sin referencia'}</span>` },
-      { t: 'Comprobante', k: r => r.comprobante_id ? html`<button class="link" data-action="comp" data-id="${r.comprobante_id}" data-nombre="${r.comprobante_nombre}">${r.comprobante_nombre}</button>` : html`<span class="faint">—</span>` },
-      { t: 'Importe', num: true, k: r => m(r.monto_cents) },
-      { t: '', k: r => puede('capturar') ? html`<span class="row-actions"><button class="btn sm primary" data-action="aceptar" data-id="${r.id}" data-banco="${r.cuenta_banco_id || ''}">Aceptar</button><button class="btn sm" data-action="rechazar" data-id="${r.id}">Rechazar</button></span>` : '' },
-    ], rows, { vacio: 'No hay pagos pendientes de validar.' })}</section>`);
-  ctx.acciones({
-    comp: d => descargar(`/api/c/${S.cid}/archivos/${d.id}`, d.nombre),
-    aceptar: d => dialogo({
-      titulo: 'Aceptar pago reportado',
-      cuerpo: html`<p class="lead">El pago se aplicará a los cargos más antiguos de la unidad y se emitirá su recibo.</p>
-        <label class="field"><span>Cuenta donde se recibió</span><select name="banco">${bs.map(b => html`<option value="${b.id}" ${String(b.id) === d.banco ? raw('selected') : ''}>${b.banco} · ${b.nombre}</option>`)}</select></label>`,
-      acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Aceptar y aplicar', primary: true }],
-      onSubmit: async f => { const r = await capi(`/pagos/${d.id}/validar`, { method: 'POST', body: { aceptar: true, cuenta_banco_id: +f.banco.value } }); invalidar(); toast(`Pago aplicado · recibo R-${r.folio}`); refrescarContadores(); ctx.recargar(); },
-    }),
-    rechazar: async d => {
-      const motivo = await pedirMotivo('Rechazar pago reportado', 'El residente verá el motivo en su portal.', 'Rechazar');
-      if (!motivo) return;
-      await capi(`/pagos/${d.id}/validar`, { method: 'POST', body: { aceptar: false, motivo } }); toast('Pago rechazado.'); ctx.recargar();
     },
   });
 }
@@ -186,7 +156,7 @@ async function descuentos(el, ctx, q) {
   const [d, c] = await Promise.all([capi(`/descuentos?desde=${desde}&hasta=${hasta}`), capi('/config')]);
   mount(el, html`<div class="grid top">
     <section class="panel c4"><header><h2>Pronto pago</h2>${pill(c.pronto_pago_bp ? ['Activo', 'pos'] : ['Inactivo', 'neutral'])}</header>
-      <p class="lead small">${c.pronto_pago_bp ? html`Quien liquida su cuota ordinaria completa a más tardar el día <b>${c.pronto_pago_dia}</b> del mes recibe <b>${(c.pronto_pago_bp / 100).toFixed(2)}%</b> de descuento, aplicado automáticamente al registrar o validar su pago.` : 'Configure un porcentaje y un día límite para descontar automáticamente a quien paga a tiempo.'}</p>
+      <p class="lead small">${c.pronto_pago_bp ? html`Quien liquida su cuota ordinaria completa a más tardar el día <b>${c.pronto_pago_dia}</b> del mes recibe <b>${(c.pronto_pago_bp / 100).toFixed(2)}%</b> de descuento, aplicado automáticamente al registrar su pago.` : 'Configure un porcentaje y un día límite para descontar automáticamente a quien paga a tiempo.'}</p>
       ${puede('config') ? html`<a class="link top-gap" href="#/c/${S.cid}/config">Cambiar en Configuración</a>` : ''}</section>
     <section class="panel c4"><header><h2>Total descontado</h2></header><p class="kpi-value md">${pesos(d.total)}</p>
       <ul class="rows top-gap">${d.por_tipo.map(x => html`<li><span class="t">${x.tipo}</span><span class="v">${pesos(x.monto)}</span></li>`)}</ul></section>

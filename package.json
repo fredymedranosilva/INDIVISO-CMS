@@ -2,15 +2,20 @@
   "name": "indiviso-cms",
   "version": "2.0.0",
   "private": true,
-  "description": "Panel administrativo para condominios: cobranza, egresos, bancos, presupuesto, contabilidad y comunidad. Sin dependencias externas.",
+  "description": "Panel administrativo para condominios: cobranza, egresos, bancos, presupuesto, y contabilidad. Sin dependencias externas.",
   "type": "module",
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "scripts": {
-    "start": "node server/index.mjs",
+    "start": "node server.js",
     "demo": "node server/seed.mjs",
     "vacio": "node server/seed.mjs --vacio",
     "test": "node --test test/*.test.mjs",
-    "demo:estatica": "node scripts/build-demo.mjs"
+    "demo:estatica": "node scripts/build-demo.mjs",
+    "local": "node server/index.mjs",
+    "hostinger": "sh scripts/paquete-hostinger.sh"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "main": "server.js"
 }

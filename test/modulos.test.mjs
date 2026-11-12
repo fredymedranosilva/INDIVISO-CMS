@@ -1,4 +1,4 @@
-// Pruebas de pronto pago, adeudos recurrentes, fondos, cuentas por pagar, liquidación anual y encuestas.
+// Pruebas de pronto pago, adeudos recurrentes, fondos, cuentas por pagar, liquidación anual .
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -9,7 +9,6 @@ process.env.INDIVISO_DATA = mkdtempSync(join(tmpdir(), 'indiviso-mod-'));
 const { openDb, tx } = await import('../server/db.mjs');
 const F = await import('../server/finanzas.mjs');
 const R = await import('../server/reportes.mjs');
-const { resultadosEncuesta } = await import('../server/comunidad.mjs');
 const { hoy, periodoDe, addMonths } = await import('../server/util.mjs');
 
 const db = openDb();
@@ -76,20 +75,31 @@ test('liquidación anual: emitido, pagado y saldo por unidad y mes', () => {
   assert.equal(l.totales.emitido, l.unidades.reduce((a, u) => a + u.emitido, 0));
 });
 
-test('encuestas: un voto por unidad, inmutable, resultados ponderados por indiviso', () => {
-  const eid = Number(db.prepare("INSERT INTO encuestas (condominio_id, pregunta, cierra, ponderada, created_at) VALUES (?, '¿Pintar de blanco?', ?, 1, 0)").run(cid, hoy()).lastInsertRowid);
-  const si = Number(db.prepare("INSERT INTO encuesta_opciones (encuesta_id, texto, orden) VALUES (?, 'Sí', 1)").run(eid).lastInsertRowid);
-  db.prepare("INSERT INTO encuesta_opciones (encuesta_id, texto, orden) VALUES (?, 'No', 2)").run(eid);
-  db.prepare('INSERT INTO encuesta_votos (encuesta_id, unidad_id, opcion_id, created_at) VALUES (?,?,?,0)').run(eid, ua, si);
-  assert.throws(() => db.prepare('INSERT INTO encuesta_votos (encuesta_id, unidad_id, opcion_id, created_at) VALUES (?,?,?,0)').run(eid, ua, si), /UNIQUE|PRIMARY/);
-  assert.throws(() => db.prepare('DELETE FROM encuesta_votos WHERE encuesta_id = ?').run(eid), /INMUTABLE/);
-  const r = resultadosEncuesta(db, { id: eid, condominio_id: cid });
-  assert.equal(r.emitidos, 1); assert.equal(r.opciones[0].indiviso_ppm, 600000); assert.equal(r.participacion, 0.5);
-});
-
 test('las columnas nuevas se agregan a una base existente', () => {
   const cols = t => db.prepare(`SELECT name FROM pragma_table_info('${t}')`).all().map(r => r.name);
   assert.ok(cols('condominios').includes('pronto_pago_bp'));
   assert.ok(cols('cargos').includes('fondo_cuenta_id'));
   assert.ok(cols('egresos').includes('fondo_id'));
+});
+
+test('liquidación de egresos: rubros fijos y variables cuadran con el presupuesto contra real', () => {
+  const tipo = c => db.prepare('SELECT tipo_gasto FROM cuentas WHERE condominio_id = ? AND codigo = ?').get(cid, c).tipo_gasto;
+  assert.equal(tipo('5201'), 'fijo'); assert.equal(tipo('5302'), 'variable');
+  const ej = +hoy().slice(0, 4);
+  const l = R.liquidacionEgresos(db, cid, ej), v = R.presupuestoVsReal(db, cid, ej);
+  assert.equal(l.totales.ejercido, v.totales.ejercido);
+  assert.equal(l.grupos.reduce((a, g) => a + g.ejercido, 0), l.totales.ejercido);
+  assert.equal(l.totales.real.reduce((a, b) => a + b, 0), l.totales.ejercido);
+  assert.ok(l.grupos.every(g => g.rows.every(r => r.tipo_gasto === g.tipo)));
+});
+
+test('importar cuotas: solo por código único de la unidad', async () => {
+  const { importar } = await import('../server/importar.mjs');
+  const ctx = { db, cid, rol: 'admin', user: u1, ip: '127.0.0.1' };
+  const opts = { perms: { config: ['admin'] }, rolPuede: () => true, referenciaPago: () => null };
+  const filas = [['Código', 'Propietario', 'Cuota mensual'], ['EJEMPLO', '', 1, 'EJEMPLO · borre esta fila'], ['M-1', '', '1,250.50'], ['RM2', '', 1000], ['Juan Pérez', '', 900], ['M-1', '', 5]];
+  const r = importar(ctx, 'cuotas', { filas, aplicar: true }, opts);
+  assert.equal(r.resumen.ejemplos, 1);
+  assert.deepEqual(r.filas.map(f => f.ok ? f.accion : 'error'), ['actualizado', 'omitido', 'error', 'error'], 'M-1 cambia; M-2 por referencia sin cambio; nombre no es código; duplicado');
+  assert.equal(db.prepare('SELECT cuota_cents FROM unidades WHERE id = ?').get(ua).cuota_cents, 125050);
 });

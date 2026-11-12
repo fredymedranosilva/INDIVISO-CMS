@@ -59,14 +59,11 @@ const IDB = {};
   IDB.presupuesto = await adminB.ok('POST', b('/presupuestos'), { ejercicio: +hoy().slice(0, 4) });
   IDB.poliza = await adminB.ok('POST', b('/polizas'), { tipo: 'D', fecha: hoy(), concepto: 'Ajuste B', lineas: [{ cuenta: partida(B), debe: 1000, haber: 0 }, { cuenta: db.prepare("SELECT id FROM cuentas WHERE condominio_id = ? AND codigo = '5590'").get(B).id, debe: 0, haber: 1000 }] });
   IDB.fondo = await adminB.ok('POST', b('/fondos'), { nombre: 'Fondo B' });
-  IDB.aviso = await adminB.ok('POST', b('/comunidad'), { tipo: 'aviso', titulo: 'Aviso privado de B', cuerpo: 'solo B' });
-  IDB.encuesta = await adminB.ok('POST', b('/encuestas'), { pregunta: '¿Pintamos?', cierra: addDays(hoy(), 5), opciones: ['Sí', 'No'] });
-  IDB.opcion = db.prepare('SELECT id FROM encuesta_opciones WHERE encuesta_id = ?').get(IDB.encuesta).id;
   IDB.recurrente = await adminB.ok('POST', b('/cargos-recurrentes'), { tipo: 'otro', concepto: 'Cajón', monto_cents: 50000, desde: periodoDe(hoy()) });
 }
 const huellaB = () => JSON.stringify([db.prepare('SELECT COUNT(*) n, COALESCE(SUM(total_cents),0) s FROM polizas WHERE condominio_id = ?').get(B), db.prepare('SELECT COUNT(*) n FROM pagos WHERE condominio_id = ?').get(B),
   db.prepare('SELECT COUNT(*) n FROM egresos WHERE condominio_id = ?').get(B), db.prepare('SELECT COUNT(*) n FROM cargos WHERE condominio_id = ?').get(B), db.prepare('SELECT COUNT(*) n FROM aplicaciones WHERE condominio_id = ?').get(B),
-  db.prepare('SELECT * FROM unidades WHERE condominio_id = ?').all(B), db.prepare('SELECT * FROM comunidad WHERE condominio_id = ?').all(B), db.prepare('SELECT COUNT(*) n FROM encuesta_votos').get()]);
+  db.prepare('SELECT * FROM unidades WHERE condominio_id = ?').all(B), db.prepare('SELECT COUNT(*) n FROM encuesta_votos').get()]);
 
 test('peticiones mal formadas no tumban el servidor', async () => {
   const h = { host: `127.0.0.1:${srv.port}` };
@@ -189,8 +186,6 @@ test('aislamiento: el administrador de A no alcanza nada de B', async () => {
     ['PUT', `/presupuestos/${IDB.presupuesto}/lineas`, { lineas: [{ cuenta_id: partida(B), mes: 1, monto_cents: 5 }] }, 404], ['POST', `/presupuestos/${IDB.presupuesto}/aprobar`, { acta: 'x' }, 404],
     ['POST', '/polizas', { tipo: 'D', fecha: hoy(), concepto: 'x', lineas: [{ cuenta: partida(B), debe: 5, haber: 0 }, { cuenta: partida(A), debe: 0, haber: 5 }] }, 400],
     ['POST', `/polizas/${IDB.poliza}/revertir`, { motivo: 'x' }, 404], ['PUT', `/fondos/${IDB.fondo}`, { activo: false }, 404],
-    ['PUT', `/comunidad/${IDB.aviso}`, { titulo: 'Hackeado' }, 404], ['POST', '/comunidad', { tipo: 'documento', titulo: 'x', archivo_id: IDB.archivo }, 404],
-    ['POST', `/encuestas/${IDB.encuesta}/votar`, { opcion_id: IDB.opcion, unidad_id: uA1 }, 404], ['POST', `/encuestas/${IDB.encuesta}/cerrar`, {}, 404],
     ['PUT', `/usuarios/${U.adminB}`, { rol: 'residente', activo: true }, 404], ['POST', `/usuarios/${U.adminB}/restablecer`, {}, 404], ['POST', `/usuarios/${U.adminB}/restablecer-2fa`, {}, 404],
     ['POST', '/usuarios', { nombre: 'x', email: 'nuevo-res@t.test', rol: 'residente', persona_id: perB1 }, 404],
   ];
@@ -211,7 +206,7 @@ test('permisos por rol', async () => {
   assert.equal(e1.estado, 'por_aprobar');
   const pg = (await adminA.ok('GET', a('/pagos')))[0];
   for (const [m, p, body] of [['POST', `/egresos/${e1.id}/aprobar`, { aprobar: true }], ['POST', `/pagos/${pg.id}/cancelar`, { motivo: 'x' }], ['PUT', '/config', { nombre: 'x' }], ['POST', `/periodos/${P1}/cerrar`, {}],
-    ['GET', '/usuarios'], ['GET', '/auditoria'], ['POST', '/usuarios', { nombre: 'x', email: 'x@t.test', rol: 'admin' }], ['POST', '/comunidad', { tipo: 'aviso', titulo: 'x' }], ['PUT', '/logo', { nombre: 'l.png', base64: 'AAAA' }],
+    ['GET', '/usuarios'], ['GET', '/auditoria'], ['POST', '/usuarios', { nombre: 'x', email: 'x@t.test', rol: 'admin' }], ['PUT', '/logo', { nombre: 'l.png', base64: 'AAAA' }],
     ['POST', '/descuentos/lote', { periodo: P1, pct_bp: 1000, motivo: 'x' }], ['POST', '/cuentas', { codigo: '5999', nombre: 'x', tipo: 'egreso' }]]) {
     assert.equal((await contA.req(m, a(p), m === 'GET' ? undefined : body)).status, 403, `contador ${m} ${p}`);
   }
@@ -382,11 +377,6 @@ test('entradas hostiles: inyección SQL, tipos y fórmulas en exportaciones', as
   const csv = (await adminA.get(a('/export/cartera.csv'))).text;
   assert.ok(csv.includes(`"'=HYPERLINK`), 'la celda con fórmula queda como texto');
   assert.ok(!/(^|,)=HYPERLINK/m.test(csv));
-  // El contenido con HTML se devuelve como dato (el navegador lo escapa al pintarlo)
-  const id = await adminA.ok('POST', a('/comunidad'), { tipo: 'aviso', titulo: '<img src=x onerror=alert(1)>', cuerpo: '<script>alert(1)</script>' });
-  const av = (await adminA.ok('GET', a('/comunidad?tipo=aviso'))).find(x => x.id === id);
-  assert.equal(av.titulo, '<img src=x onerror=alert(1)>');
-  assert.match((await adminA.get(a('/comunidad?tipo=aviso'))).headers.get('content-type'), /application\/json/);
 });
 
 test('la bitácora registra y su cadena sigue íntegra', async () => {

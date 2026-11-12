@@ -18,7 +18,8 @@ const FORMAS = [['Transferencia', '03'], ['Efectivo', '01'], ['Cheque', '02'], [
 const hojaUnidades = c => ({ nombre: 'Unidades', filas: [['Clave', 'Torre', 'Propietario', 'Referencia de pago'], ...c.unidades.filter(u => u.activo).map(u => [u.clave, u.torre || '', u.propietario || '', u.referencia])] });
 const hojaCuentas = c => ({ nombre: 'Cuentas', filas: [['Código', 'Cuenta', 'Número', 'Fondo'], ...c.bancos.map(b => [b.codigo, b.nombre, b.numero || '', b.fondo === 'reserva' ? 'Reserva' : 'Operación']), ['Caja', 'Efectivo en caja', '', '']] });
 const hojaFormas = () => ({ nombre: 'Formas de pago', filas: [['Forma de pago', 'Clave SAT (también se acepta)'], ...FORMAS] });
-const hojaPartidas = c => ({ nombre: 'Partidas', filas: [['Código', 'Partida'], ...c.partidas.map(p => [p.codigo, p.nombre])] });
+const TG = t => t === 'fijo' ? 'Fijo' : 'Variable';
+const hojaPartidas = c => ({ nombre: 'Partidas', filas: [['Código', 'Partida', 'Tipo de gasto'], ...c.partidas.map(p => [p.codigo, p.nombre, TG(p.tipo_gasto)])] });
 const instrucciones = lineas => ({ nombre: 'Instrucciones', anchos: [110], filas: [['Cómo llenar la plantilla'], ...lineas.map(l => [l])] });
 // Tres filas de ejemplo (en amarillo, marcadas «EJEMPLO · borre esta fila»): muestran cómo capturar y nunca se importan.
 const MARCA = 'EJEMPLO · borre esta fila';
@@ -103,6 +104,18 @@ const DEF = {
         '• Tipo: departamento, casa, local, oficina, bodega o estacionamiento.',
         '• Un propietario o inquilino con otro nombre se agrega a la unidad; para quitar a alguien use la ficha de la unidad.'])],
   },
+  cuotas: {
+    titulo: 'Importar cuotas de los departamentos', archivo: 'cuotas',
+    ayuda: 'Actualiza la cuota ordinaria mensual de cada departamento. Cada fila se identifica únicamente por el código de la unidad (no por nombre), para evitar confusiones. Las cuotas ya emitidas no cambian: la nueva cuota aplica desde la siguiente emisión.',
+    plantilla: c => {
+      const us = c.unidades.filter(u => u.activo);
+      const ej = us.slice(0, 3).map((u, i) => [u.clave, u.propietario || '', [3450, 3800, 4200][i], `${MARCA}`]);
+      return [hojaConEjemplos('Cuotas', ['Código', 'Propietario', 'Cuota mensual', 'Comentarios'], ej, us.map(u => [u.clave, u.propietario || '', (u.cuota_cents || 0) / 100])),
+        instrucciones([...COMUNES, '• La hoja trae todos los departamentos con su cuota actual: cambie solo la columna «Cuota mensual».',
+          '• Código: clave única de la unidad (hoja Unidades) o su referencia de pago. La columna Propietario es solo de consulta.',
+          '• Las cuotas sin cambio se omiten. Las cuotas ya emitidas no se modifican.']), hojaUnidades(c)];
+    },
+  },
   saldos: {
     titulo: 'Saldos iniciales por unidad', archivo: 'saldos-iniciales',
     ayuda: 'Para empezar a operar con los saldos que traía cada unidad en el sistema anterior. Un saldo positivo es adeudo; uno negativo (o con «A favor») es saldo a favor. Se registra contra «Remanente de ejercicios anteriores», no como ingreso del año. Solo se registra uno por unidad.',
@@ -120,12 +133,12 @@ const DEF = {
     titulo: 'Importar presupuesto desde Excel', archivo: 'presupuesto',
     ayuda: 'Cada fila es una partida con su importe por mes. Si solo trae una columna «Anual» se reparte en 12 meses iguales (sin perder centavos). Las partidas que no vienen en el archivo no se modifican.',
     plantilla: (c, x) => [
-      hojaConEjemplos('Presupuesto', ['Código', 'Partida', ...MES, 'Comentarios'], [
-        ['EJEMPLO', 'Vigilancia (mismo importe cada mes)', ...MES.map(() => 31300), MARCA],
-        ['EJEMPLO', 'Mantenimiento de elevadores (trimestral)', ...MES.map((_, i) => i % 3 === 0 ? 9800 : 0), MARCA],
-        ['EJEMPLO', 'Pintura (solo en abril)', ...MES.map((_, i) => i === 3 ? 45000 : 0), MARCA]],
-        c.partidas.map(p => [p.codigo, p.nombre, ...MES.map((_, i) => (x.valores.get(`${p.id}:${i + 1}`) || 0) / 100)])),
-      instrucciones([...COMUNES, '• Código: el de la partida (hoja Partidas). Importes por mes en pesos.', '• En lugar de los 12 meses puede usar una sola columna «Anual» o «Mensual».']), hojaPartidas(c)],
+      hojaConEjemplos('Presupuesto', ['Código', 'Partida', 'Tipo', ...MES, 'Comentarios'], [
+        ['EJEMPLO', 'Vigilancia (mismo importe cada mes)', 'Fijo', ...MES.map(() => 31300), MARCA],
+        ['EJEMPLO', 'Mantenimiento de elevadores (trimestral)', 'Fijo', ...MES.map((_, i) => i % 3 === 0 ? 9800 : 0), MARCA],
+        ['EJEMPLO', 'Pintura (solo en abril)', 'Variable', ...MES.map((_, i) => i === 3 ? 45000 : 0), MARCA]],
+        c.partidas.map(p => [p.codigo, p.nombre, TG(p.tipo_gasto), ...MES.map((_, i) => (x.valores.get(`${p.id}:${i + 1}`) || 0) / 100)])),
+      instrucciones([...COMUNES, '• Código: el código único de la partida (hoja Partidas); la fila se identifica por el código, no por el nombre. Importes por mes en pesos.', '• Tipo: Fijo (contratos y pagos periódicos) o Variable (consumos y reparaciones). Si lo cambia, se actualiza en el catálogo.', '• En lugar de los 12 meses puede usar una sola columna «Anual» o «Mensual».']), hojaPartidas(c)],
     opciones: () => puede('config') ? html`<label class="check"><input type="checkbox" name="crear_partidas"><span>Crear las partidas que no existan en el catálogo</span></label>` : '',
     leer: f => ({ crear_partidas: !!f.crear_partidas?.checked }),
   },

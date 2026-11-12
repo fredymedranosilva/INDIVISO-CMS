@@ -7,14 +7,13 @@ import { S, api, html, raw, mount, $, $$, ICON, LOGO, toast, errorToast, puede, 
 //   id · título del menú · grupo · ícono (ICON) · permiso (ui.puede) · contador (opcional) · cargar
 export const MODULOS = [
   { id: 'tablero', titulo: 'Tablero', grupo: null, icono: 'tablero', perm: 'ver', cargar: () => import('./views/tablero.js') },
-  { id: 'cobranza', titulo: 'Cobranza', grupo: 'Ingresos', icono: 'cobranza', perm: 'ver', contador: 'pagos', cargar: () => import('./views/cobranza.js') },
+  { id: 'cobranza', titulo: 'Cobranza', grupo: 'Ingresos', icono: 'cobranza', perm: 'ver', cargar: () => import('./views/cobranza.js') },
   { id: 'ingresos', titulo: 'Ingresos', grupo: 'Ingresos', icono: 'ingresos', perm: 'ver', cargar: () => import('./views/ingresos.js') },
   { id: 'morosidad', titulo: 'Morosidad', grupo: 'Ingresos', icono: 'morosidad', perm: 'ver', cargar: () => import('./views/morosidad.js') },
   { id: 'estados', titulo: 'Estados de cuenta', grupo: 'Ingresos', icono: 'estados', perm: 'ver', cargar: () => import('./views/estados.js') },
   { id: 'egresos', titulo: 'Egresos', grupo: 'Gasto y bancos', icono: 'egresos', perm: 'ver', contador: 'egresos', cargar: () => import('./views/egresos.js') },
   { id: 'bancos', titulo: 'Bancos y conciliación', grupo: 'Gasto y bancos', icono: 'bancos', perm: 'ver', contador: 'bancos', cargar: () => import('./views/bancos.js') },
   { id: 'unidades', titulo: 'Unidades y residentes', grupo: 'Padrón', icono: 'unidades', perm: 'ver', cargar: () => import('./views/unidades.js') },
-  { id: 'comunidad', titulo: 'Comunidad', grupo: 'Padrón', icono: 'comunidad', perm: 'ver', residente: true, cargar: () => import('./views/comunidad.js') },
   { id: 'presupuesto', titulo: 'Presupuesto', grupo: 'Finanzas', icono: 'presupuesto', perm: 'ver', cargar: () => import('./views/presupuesto.js') },
   { id: 'contabilidad', titulo: 'Contabilidad', grupo: 'Finanzas', icono: 'contabilidad', perm: 'ver', cargar: () => import('./views/contabilidad.js') },
   { id: 'reportes', titulo: 'Reportes', grupo: 'Finanzas', icono: 'reportes', perm: 'ver', cargar: () => import('./views/reportes.js') },
@@ -136,7 +135,7 @@ export function tintar(el) { if (!el) return; const h = (+el.dataset.tint * 67) 
 function cambiarCondo(id, vista = 'tablero') {
   const c = S.condos.find(x => x.id === id); if (!c) return;
   S.cid = id; S.rol = c.rol; store.set('idv-condo', String(id));
-  const v = c.rol === 'residente' ? (vista === 'comunidad' ? 'comunidad' : 'mi') : (VISTAS[vista] && vista !== 'mi' ? vista : 'tablero');
+  const v = c.rol === 'residente' ? 'mi' : (VISTAS[vista] && vista !== 'mi' ? vista : 'tablero');
   shell();
   location.hash = `#/c/${id}/${v}`;
   enrutar();
@@ -146,7 +145,7 @@ export async function refrescarContadores() {
   if (!S.cid || S.rol === 'residente') return;
   try {
     const t = await capi(`/tablero`);
-    contadores = { pagos: t.pendientes.pagos_por_validar, egresos: t.pendientes.egresos_por_aprobar, bancos: t.pendientes.movs_sin_conciliar };
+    contadores = { egresos: t.pendientes.egresos_por_aprobar, bancos: t.pendientes.movs_sin_conciliar };
     for (const el of $$('[data-count]')) { const n = contadores[el.dataset.count]; el.textContent = n; el.hidden = !n; el.setAttribute('aria-label', `${n} pendientes`); }
   } catch { /* contadores no críticos */ }
 }

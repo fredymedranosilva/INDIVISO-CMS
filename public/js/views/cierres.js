@@ -16,7 +16,6 @@ export async function render(el, ctx) {
     <div class="grid top">
       <section class="panel c7"><header><h2>${siguiente ? `Cerrar ${mesNombre(siguiente)}` : 'No hay meses pendientes de cierre'}</h2></header>
         ${ck ? html`<ul class="rows">
-          ${item(!ck.pagos_por_validar, 'Pagos reportados validados', ck.pagos_por_validar ? `${ck.pagos_por_validar} pendientes` : 'listo', `#/c/${S.cid}/cobranza/validar`)}
           ${item(!ck.egresos_por_aprobar, 'Egresos aprobados o rechazados', ck.egresos_por_aprobar ? `${ck.egresos_por_aprobar} pendientes` : 'listo', `#/c/${S.cid}/egresos/aprobar`)}
           ${item(ck.cuotas_emitidas > 0, 'Cuotas del mes emitidas', ck.cuotas_emitidas ? `${ck.cuotas_emitidas} cuotas` : 'sin emitir', `#/c/${S.cid}/cobranza/emision`, true)}
           ${item(!ck.movs_sin_conciliar, 'Movimientos bancarios conciliados', ck.movs_sin_conciliar ? `${ck.movs_sin_conciliar} sin conciliar` : 'listo', `#/c/${S.cid}/bancos`, true)}

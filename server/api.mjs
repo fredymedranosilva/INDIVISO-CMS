@@ -10,7 +10,6 @@ import * as R from './reportes.mjs';
 import { membresias, revocarSesionesDe, TEMPORAL_MS } from './auth.mjs';
 import { crearRespaldo, verificarRespaldo, rutaRespaldo, BACKUP_DIR } from './backup.mjs';
 import { importar, catalogosPlantilla } from './importar.mjs';
-import { rutasComunidad } from './comunidad.mjs';
 
 
 export const VERSION = '2.0.0';
@@ -27,7 +26,6 @@ const PERMS = {
   config: ['admin'],
   usuarios: ['admin'],
   auditoria: ['admin', 'comite'],
-  comunicar: ['admin', 'comite'],   // avisos, documentos, encuestas
   residente: ['residente'],
 };
 function rolEn(ctx, cid) {
@@ -599,7 +597,7 @@ export const apiRoutes = [
 
   // ===== Archivos =====
   ['POST', `${C}/archivos`, { limite: 8_000_000 }, ctx => {
-    if (!PERMS.capturar.includes(ctx.rol) && !PERMS.comunicar.includes(ctx.rol) && ctx.rol !== 'residente') fail(403, 'No tiene permiso para subir archivos.');
+    if (!PERMS.capturar.includes(ctx.rol) && ctx.rol !== 'residente') fail(403, 'No tiene permiso para subir archivos.');
     const b = v(ctx.body, { nombre: 'str|max160', base64: 'str|max7000000' });
     return tx(ctx.db, () => ({ id: guardarArchivo(ctx, b.nombre, b.base64) }));
   }],
@@ -608,7 +606,7 @@ export const apiRoutes = [
     if (ctx.rol === 'residente') {
       const mios = new Set(unidadesDeResidente(ctx).map(u => u.id));
       const ligado = ctx.db.prepare('SELECT unidad_id FROM pagos WHERE comprobante_id = ? AND condominio_id = ?').all(a.id, ctx.cid).some(p => mios.has(p.unidad_id));
-      const publicado = ctx.db.prepare("SELECT 1 FROM comunidad WHERE archivo_id = ? AND condominio_id = ? AND publico = 1 AND estado <> 'archivado'").get(a.id, ctx.cid);
+      const publicado = false;
       if (!ligado && !publicado && a.created_by !== ctx.user.id) fail(404, 'Archivo no encontrado');
     } else exigir(ctx, 'ver');
     return { __file: { path: join(FILES_DIR, a.sha256), name: a.nombre, mime: a.mime } };
@@ -688,7 +686,7 @@ export const apiRoutes = [
   }],
   ['GET', `${C}/presupuestos/:id`, { perm: 'ver' }, ctx => {
     const p = ctx.db.prepare('SELECT * FROM presupuestos WHERE id = ? AND condominio_id = ?').get(idParam(ctx), ctx.cid) || fail(404, 'Presupuesto no encontrado');
-    const cuentas = ctx.db.prepare("SELECT id, codigo, nombre FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(ctx.cid);
+    const cuentas = ctx.db.prepare("SELECT id, codigo, nombre, tipo_gasto FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(ctx.cid);
     const lineas = ctx.db.prepare('SELECT * FROM presupuesto_lineas WHERE presupuesto_id = ?').all(p.id);
     return { presupuesto: p, cuentas, lineas, vs: R.presupuestoVsReal(ctx.db, ctx.cid, p.ejercicio, p.id), sugerida: F.cuotaSugerida(ctx.db, ctx.cid, p.id) };
   }],
@@ -762,12 +760,23 @@ export const apiRoutes = [
   // ===== Contabilidad =====
   ['GET', `${C}/cuentas`, { perm: 'ver' }, ctx => ctx.db.prepare('SELECT * FROM cuentas WHERE condominio_id = ? ORDER BY codigo').all(ctx.cid)],
   ['POST', `${C}/cuentas`, { perm: 'config' }, ctx => {
-    const b = v(ctx.body, { codigo: 'str|max12', nombre: 'str|max120', tipo: 'enum|activo|pasivo|patrimonio|ingreso|egreso' });
+    const b = v(ctx.body, { codigo: 'str|max12', nombre: 'str|max120', tipo: 'enum|activo|pasivo|patrimonio|ingreso|egreso', tipo_gasto: 'enum|fijo|variable|opt' });
     if (!/^\d{4}(-\d{2})?$/.test(b.codigo)) fail(400, 'Código con formato 0000 o 0000-00.');
     const nat = ['activo', 'egreso'].includes(b.tipo) ? 'D' : 'A';
     return escribir(ctx, 'cuenta_creada', 'cuenta', () => {
       if (ctx.db.prepare('SELECT 1 FROM cuentas WHERE condominio_id = ? AND codigo = ?').get(ctx.cid, b.codigo)) fail(409, 'Ya existe una cuenta con ese código.', 'DUPLICADO');
-      return Number(ctx.db.prepare('INSERT INTO cuentas (condominio_id, codigo, nombre, tipo, naturaleza, presupuestable) VALUES (?,?,?,?,?,?)').run(ctx.cid, b.codigo, b.nombre, b.tipo, nat, b.tipo === 'egreso' ? 1 : 0).lastInsertRowid);
+      return Number(ctx.db.prepare('INSERT INTO cuentas (condominio_id, codigo, nombre, tipo, naturaleza, presupuestable, tipo_gasto) VALUES (?,?,?,?,?,?,?)').run(ctx.cid, b.codigo, b.nombre, b.tipo, nat, b.tipo === 'egreso' ? 1 : 0, b.tipo === 'egreso' ? b.tipo_gasto || 'variable' : null).lastInsertRowid);
+    });
+  }],
+  // Rubro de egreso: nombre y tipo de gasto (fijo o variable). El código es único e inmutable.
+  ['PUT', `${C}/cuentas/:id`, { perm: 'config' }, ctx => {
+    const b = v(ctx.body, { nombre: 'str|opt|max120', tipo_gasto: 'enum|fijo|variable|opt' });
+    const k = ctx.db.prepare('SELECT * FROM cuentas WHERE id = ? AND condominio_id = ?').get(idParam(ctx), ctx.cid) || fail(404, 'Cuenta no encontrada');
+    if (b.tipo_gasto && k.tipo !== 'egreso') fail(400, 'Solo los rubros de egreso son fijos o variables.');
+    ctx.auditDetalle = { codigo: k.codigo, ...b };
+    return escribir(ctx, 'cuenta_actualizada', 'cuenta', () => {
+      ctx.db.prepare('UPDATE cuentas SET nombre = COALESCE(?, nombre), tipo_gasto = COALESCE(?, tipo_gasto) WHERE id = ?').run(b.nombre ?? null, b.tipo_gasto ?? null, k.id);
+      return k.id;
     });
   }],
   ['GET', `${C}/polizas`, { perm: 'ver' }, ctx => {
@@ -802,6 +811,7 @@ export const apiRoutes = [
   ['GET', `${C}/reportes/cobranza`, { perm: 'ver' }, ctx => R.cobranzaMensual(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', addMonths(periodoActual(), -11)), qPeriodo(ctx, 'hasta', periodoActual()))],
   ['GET', `${C}/reportes/fondos`, { perm: 'ver' }, ctx => R.fondos(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', `${hoy().slice(0, 4)}-01`), qPeriodo(ctx, 'hasta', periodoActual()))],
   ['GET', `${C}/reportes/cxp`, { perm: 'ver' }, ctx => R.cuentasPorPagar(ctx.db, ctx.cid, qFecha(ctx, 'corte', hoy()))],
+  ['GET', `${C}/reportes/liquidacion-egresos`, { perm: 'ver' }, ctx => R.liquidacionEgresos(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/liquidacion`, { perm: 'ver' }, ctx => R.liquidacionAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/anual`, { perm: 'ver' }, ctx => R.informeAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/ingresos`, { perm: 'ver' }, ctx => { const r = qRango(ctx); return { anio: r.anio, mes: r.mes, ...R.ingresos(ctx.db, ctx.cid, r.desde, r.hasta), mensual: R.ingresosMensual(ctx.db, ctx.cid, r.anio).meses }; }],
@@ -936,18 +946,8 @@ export const apiRoutes = [
         fondo_reserva: R.saldoCuentaClave(ctx.db, ctx.cid, 'FONDO_RESERVA'), cobranza: R.cobranzaMensual(ctx.db, ctx.cid, `${anio}-01`, periodoActual()) },
     };
   }],
-  ['POST', `${C}/mi/pagos`, { perm: 'residente' }, ctx => {
-    const b = v(ctx.body, { ...pagoBody, comprobante_id: 'int|min1' });
-    if (!unidadesDeResidente(ctx).some(u => u.id === b.unidad_id)) fail(404, 'Unidad no encontrada');
-    const arch = ctx.db.prepare('SELECT created_by FROM archivos WHERE id = ? AND condominio_id = ?').get(b.comprobante_id, ctx.cid);
-    if (!arch || arch.created_by !== ctx.user.id) fail(400, 'Adjunte su comprobante de pago.');
-    if (b.fecha > hoy()) fail(400, 'La fecha de pago no puede ser futura.');
-    if (!limiteUsuario(ctx, 'reporte_pago')) fail(429, 'Demasiados reportes en poco tiempo.');
-    return escribir(ctx, 'pago_reportado', 'pago', () => F.registrarPago(ctx.db, ctx.cid, { ...b, confirmar_duplicado: true }, ctx.user, { validar: false }));
-  }],
 ];
 
-apiRoutes.push(...rutasComunidad({ C, PERMS, escribir, exigir, idParam, q, unidadesDeResidente }));
 
 // Un administrador solo restablece cuentas que controla por completo: el usuario debe pertenecer a este condominio,
 // no ser superadministrador y no tener acceso a condominios donde quien actúa no es administrador.

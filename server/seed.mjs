@@ -271,19 +271,9 @@ tx(db, () => {
     db.prepare('INSERT INTO gestiones (condominio_id, unidad_id, tipo, nota, promesa_fecha, promesa_cents, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)')
       .run(H.cid, u.id, pick(['llamada', 'correo', 'whatsapp']), pick(['Se envió recordatorio de saldo vencido.', 'Indica que pagará en la próxima quincena.', 'No contestó; se dejó mensaje.']), u.perfil === 'tardio' ? addDays(HOY, ri(3, 12)) : null, u.perfil === 'tardio' ? u.cuota * 2 : null, contador.id, Date.now() - ri(1, 20) * 86400000);
   }
-  // pagos reportados por residentes con comprobante, pendientes de validar
-  const pdf = Buffer.from('%PDF-1.4\n% comprobante demo\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
-  for (const u of H.unidades.filter(x => x.perfil === 'tardio').slice(0, 3)) {
-    const debe = F.cargosAbiertos(db, u.id).reduce((a, c) => a + c.saldo_cents, 0);
-    if (!debe) continue;
-    const buf = Buffer.concat([pdf, Buffer.from(String(u.id))]);
-    const arch = Number(db.prepare('INSERT INTO archivos (condominio_id, sha256, nombre, mime, bytes, created_by, created_at) VALUES (?,?,?,?,?,?,?)').run(H.cid, sha256(buf), `comprobante-${u.clave}.pdf`, 'application/pdf', buf.length, residenteU.id, Date.now()).lastInsertRowid);
-    writeFileSync(join(DATA_DIR, 'archivos', sha256(buf)), buf, { mode: 0o600 });
-    F.registrarPago(db, H.cid, { unidad_id: u.id, fecha: addDays(HOY, -ri(0, 2)), monto_cents: debe, metodo: 'transferencia', referencia: `${ri(10000000, 99999999)}`, cuenta_banco_id: H.bOp, comprobante_id: arch, idem_key: `SEEDR-${token(8)}`, confirmar_duplicado: true }, residenteU, { validar: false });
-  }
 });
 
-// Módulos de finanzas adicionales y comunidad (mismo motor que la operación normal)
+// Módulos de finanzas adicionales (mismo motor que la operación normal)
 tx(db, () => {
   const ahora = Date.now();
   // Pronto pago: 3% a quien liquida a más tardar el día 5
@@ -310,47 +300,6 @@ tx(db, () => {
   F.aprobarEgreso(db, H.cid, eg.id, true, null, comite);
   F.pagarEgreso(db, H.cid, eg.id, { fecha_pago: `${addMonths(ACTUAL, -1)}-28`, metodo: 'transferencia', cuenta_banco_id: H.bOp, referencia: 'SPEI 8812' }, contador);
 
-  // Comunidad
-  const pub = (cid, d) => Number(db.prepare(`INSERT INTO comunidad (condominio_id, tipo, titulo, cuerpo, categoria, fecha, hora, lugar, telefono, archivo_id, fijado, publico, estado, created_by, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(cid, d.tipo, d.titulo, d.cuerpo ?? null, d.categoria ?? null, d.fecha ?? null, d.hora ?? null, d.lugar ?? null, d.telefono ?? null, d.archivo_id ?? null, d.fijado ? 1 : 0, d.publico === false ? 0 : 1, d.estado || 'vigente', admin.id, d.ts ?? ahora).lastInsertRowid);
-  const doc = (cid, nombre, texto) => {
-    const buf = Buffer.from(`%PDF-1.4\n% ${texto}\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n`);
-    const h = sha256(buf);
-    writeFileSync(join(DATA_DIR, 'archivos', h), buf, { mode: 0o600 });
-    return Number(db.prepare('INSERT INTO archivos (condominio_id, sha256, nombre, mime, bytes, created_by, created_at) VALUES (?,?,?,?,?,?,?)').run(cid, h, nombre, 'application/pdf', buf.length, admin.id, ahora).lastInsertRowid);
-  };
-  const dia = n => addDays(HOY, n);
-  pub(H.cid, { tipo: 'aviso', titulo: 'Asamblea ordinaria anual', fijado: true, categoria: 'Asamblea', ts: ahora - 86400000 * 2,
-    cuerpo: `Se convoca a la asamblea ordinaria anual el ${dia(12)} a las 19:00 h en el salón de usos múltiples.\n\nOrden del día:\n1. Informe anual de la administración y del comité de vigilancia.\n2. Presupuesto del próximo ejercicio y cuota de mantenimiento.\n3. Avance del fondo de pintura de fachadas.\n4. Asuntos generales.\n\nSu asistencia es importante para alcanzar quórum.` });
-  pub(H.cid, { tipo: 'aviso', titulo: 'Mantenimiento de la cisterna: corte de agua', categoria: 'Mantenimiento', ts: ahora - 86400000 * 5,
-    cuerpo: `El ${dia(4)} de 9:00 a 14:00 h se suspenderá el servicio de agua por limpieza y desinfección de la cisterna. Le recomendamos almacenar agua la noche anterior.` });
-  pub(H.cid, { tipo: 'aviso', titulo: 'Descuento por pronto pago', categoria: 'Administración', ts: ahora - 86400000 * 20,
-    cuerpo: 'A partir de este mes, quien liquide su cuota completa a más tardar el día 5 recibe 3% de descuento automáticamente en su recibo.' });
-  pub(H.cid, { tipo: 'evento', titulo: 'Asamblea ordinaria anual', fecha: dia(12), hora: '19:00', lugar: 'Salón de usos múltiples', cuerpo: 'Primera convocatoria 19:00 h, segunda 19:30 h.' });
-  pub(H.cid, { tipo: 'evento', titulo: 'Limpieza de cisterna (sin agua)', fecha: dia(4), hora: '09:00', lugar: 'Cisterna general' });
-  pub(H.cid, { tipo: 'evento', titulo: 'Fumigación de áreas comunes', fecha: dia(9), hora: '08:00', lugar: 'Jardines, pasillos y estacionamiento', cuerpo: 'Evite que mascotas y niños transiten por las áreas recién fumigadas durante 2 horas.' });
-  pub(H.cid, { tipo: 'evento', titulo: 'Posada del condominio', fecha: dia(40), hora: '18:00', lugar: 'Alberca y palapa' });
-  pub(H.cid, { tipo: 'documento', titulo: 'Reglamento interno del condominio', categoria: 'Reglamento', cuerpo: 'Versión vigente aprobada en asamblea.', archivo_id: doc(H.cid, 'reglamento-interno.pdf', 'Reglamento interno') });
-  pub(H.cid, { tipo: 'documento', titulo: 'Acta de la asamblea extraordinaria', categoria: 'Actas de asamblea', cuerpo: 'Aprobación del fondo de pintura de fachadas.', archivo_id: doc(H.cid, 'acta-asamblea-extraordinaria.pdf', 'Acta asamblea') });
-  pub(H.cid, { tipo: 'documento', titulo: `Estados financieros ${addMonths(ACTUAL, -1)}`, categoria: 'Estados financieros', archivo_id: doc(H.cid, `estados-financieros-${addMonths(ACTUAL, -1)}.pdf`, 'Estados financieros') });
-  pub(H.cid, { tipo: 'documento', titulo: 'Póliza de seguro de áreas comunes', categoria: 'Pólizas de seguro', publico: false, archivo_id: doc(H.cid, 'poliza-seguro.pdf', 'Poliza seguro') });
-  for (const [t, tel, cat, d] of [['Caseta de vigilancia', '998 123 4567', 'Condominio', 'Atención 24 horas'], ['Administración', '998 765 4321', 'Condominio', 'Lunes a viernes de 9:00 a 18:00'],
-    ['Emergencias', '911', 'Emergencias', 'Policía, bomberos y ambulancia'], ['Bomberos', '998 884 1202', 'Emergencias', ''], ['Fugas de gas', '998 887 3500', 'Servicios', 'Reporte de fugas'], ['Plomero de confianza', '998 155 9087', 'Servicios', 'Recomendado por la administración']])
-    pub(H.cid, { tipo: 'telefono', titulo: t, telefono: tel, categoria: cat, cuerpo: d || null });
-  pub(H.cid, { tipo: 'perdido', titulo: 'Llaves con llavero rojo', fecha: dia(-3), lugar: 'Gimnasio', cuerpo: 'Tres llaves y control de portón.' });
-  pub(H.cid, { tipo: 'perdido', titulo: 'Lentes de sol', fecha: dia(-10), lugar: 'Alberca', estado: 'entregado' });
-  // Encuestas: una abierta (ponderada por indiviso) y una cerrada
-  const enc = (pregunta, cierra, estado, ponderada, ops, desc) => {
-    const id = Number(db.prepare('INSERT INTO encuestas (condominio_id, pregunta, descripcion, cierra, ponderada, estado, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)').run(H.cid, pregunta, desc, cierra, ponderada, estado, admin.id, ahora).lastInsertRowid);
-    return { id, ops: ops.map((t, i) => Number(db.prepare('INSERT INTO encuesta_opciones (encuesta_id, texto, orden) VALUES (?,?,?)').run(id, t, i + 1).lastInsertRowid)) };
-  };
-  const votar = (e, unidades, pesosOp) => { for (const u of unidades) { const r = rnd(); let acc = 0, k = 0; for (; k < pesosOp.length - 1; k++) { acc += pesosOp[k]; if (r < acc) break; } db.prepare('INSERT INTO encuesta_votos (encuesta_id, unidad_id, opcion_id, registrado_por, created_at) VALUES (?,?,?,?,?)').run(e.id, u.id, e.ops[k], admin.id, ahora); } };
-  const e1 = enc('¿Aprueba instalar paneles solares para el alumbrado de áreas comunes?', dia(10), 'abierta', 1, ['Sí', 'No', 'Me abstengo'], 'Inversión estimada de $380,000 con cargo al fondo de reserva; ahorro estimado de 40% en energía de áreas comunes.');
-  votar(e1, H.unidades.slice(1, 27), [0.62, 0.3, 0.08]); // la unidad del residente de prueba queda sin votar
-  const e2 = enc('Horario de la alberca los fines de semana', dia(-15), 'cerrada', 0, ['8:00 a 20:00', '9:00 a 22:00'], null);
-  votar(e2, H.unidades.slice(0, 31), [0.45, 0.55]);
-  pub(A.cid, { tipo: 'aviso', titulo: 'Revisión anual de elevadores', fijado: true, categoria: 'Mantenimiento', cuerpo: `El ${dia(6)} el elevador estará fuera de servicio de 10:00 a 13:00 h por la revisión anual.` });
-  pub(A.cid, { tipo: 'telefono', titulo: 'Recepción', telefono: '55 5123 4400', categoria: 'Condominio' });
 });
 
 // Cierre de los meses ya revisados (hasta dos meses atrás)

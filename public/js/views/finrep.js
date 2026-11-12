@@ -244,3 +244,47 @@ export async function conciliacionVista(el, ctx, q, ruta) {
 }
 
 export const hoyStr = hoy;
+
+// ---------- Liquidación anual de egresos: real contra presupuesto por rubro, fijo y variable ----------
+const varCls = v => v < 0 ? 'neg-t' : '';
+const pctEj = (e, a) => a ? pct(e / a, 0) : '—';
+export async function liquidacionEgresosVista(el, ctx, q, ruta) {
+  const anio = +hoy().slice(0, 4), ej = +(q.get('ejercicio') || anio);
+  const d = await capi(`/reportes/liquidacion-egresos?ejercicio=${ej}`);
+  const t = d.totales, MS = MESES_L.map(x => x.slice(0, 3));
+  const fila = (r, cls = '') => html`<tr class="${cls}"><td class="num">${r.codigo || ''}</td><td>${r.nombre}</td>
+    ${r.presupuesto.map((p, i) => html`<td class="r num small" title="Presupuesto ${pesos(p)}"><span class="${r.real[i] > p && p ? 'neg-t' : r.real[i] ? '' : 'zero'}">${sin00(r.real[i])}</span></td>`)}
+    <td class="r num">${pesos(r.anual)}</td><td class="r num"><b>${pesos(r.ejercido)}</b></td><td class="r num ${varCls(r.anual - r.ejercido)}">${pesos(r.anual - r.ejercido, { signo: true })}</td><td class="r num">${pctEj(r.ejercido, r.anual)}</td></tr>`;
+  const tablaLiq = html`<div class="table-wrap"><table class="tbl dense sabana liq"><thead><tr><th>Código</th><th>Rubro</th>${MS.map(x => html`<th class="r">${x}</th>`)}<th class="r">Presupuesto</th><th class="r">Real</th><th class="r">Variación</th><th class="r">% ejercido</th></tr></thead>
+    <tbody>${d.grupos.map(g => html`<tr class="grupo"><td colspan="18">${g.nombre}</td></tr>${g.rows.map(r => fila(r))}${fila({ ...g, nombre: `Subtotal ${g.nombre.toLowerCase()}` }, 'clasif')}`)}</tbody>
+    <tfoot>${fila({ ...t, nombre: 'Total de egresos' })}<tr><td></td><td>Presupuesto del mes</td>${t.presupuesto.map(p => html`<td class="r num small">${sin00(p)}</td>`)}<td colspan="4"></td></tr></tfoot></table></div>`;
+  const anios = [anio, anio - 1, anio - 2, anio - 3];
+  mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio" data-auto>${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label>
+      <span class="spacer"></span><button type="button" class="btn ghost" data-action="excel">Exportar a Excel</button>${botonPdf()}</form>
+    <section class="panel"><div class="kpis">
+      <div class="kpi"><p class="label">Presupuesto anual ${ej}</p><p class="kpi-value md">${pesos(t.anual)}</p><p class="sub">${d.presupuesto ? `Versión ${d.presupuesto.version} · ${d.presupuesto.estado}` : 'Sin presupuesto capturado'}</p></div>
+      <div class="kpi"><p class="label">Gasto real</p><p class="kpi-value md">${pesos(t.ejercido)}</p><p class="sub">${pctEj(t.ejercido, t.anual)} del presupuesto anual${d.cerrado ? '' : ` · a ${MESES_L[Math.max(0, d.mes_actual - 1)].toLowerCase()}`}</p></div>
+      <div class="kpi"><p class="label">Variación anual</p><p class="kpi-value md ${varCls(t.variacion)}">${pesos(t.variacion, { signo: true })}</p><p class="sub">${t.variacion >= 0 ? 'por debajo del presupuesto' : 'sobregiro'}</p></div>
+      ${d.grupos.map(g => html`<div class="kpi"><p class="label">${g.nombre}</p><p class="kpi-value md">${pesos(g.ejercido)}</p><p class="sub">de ${pesos(g.anual)} · ${pctEj(g.ejercido, g.anual)}</p></div>`)}</div></section>
+    <section class="panel top-gap"><header><h2>Real contra presupuesto por mes · ${ej}</h2><span class="meta">Verde: gasto real · dorado: presupuesto</span></header><div id="ch-liq" class="chart-box"></div></section>
+    <section class="panel flush top-gap"><header><h2>Liquidación por rubro · ${ej}</h2><span class="meta">Gasto real de cada mes (pase el cursor para ver el presupuesto). En rojo, meses sobre presupuesto.</span></header>${tablaLiq}</section>`);
+  const nM = Math.max(1, d.mes_actual || 12);
+  window.Charts?.line($('#ch-liq', el), { labels: MS.slice(0, nM), series: [{ name: 'Real', values: t.real.slice(0, nM).map(x => x / 100) }, { name: 'Presupuesto', values: t.presupuesto.slice(0, nM).map(x => x / 100), muted: true }], format: pesosFmt, tickFormat: window.Charts.fmtCompact });
+  filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
+  ctx.acciones({
+    pdf: () => conPdf('pdfLiquidacionEgresos', d),
+    excel: () => {
+      const enc = ['Código', 'Rubro', 'Tipo', ...MS.flatMap(x => [`${x} presupuesto`, `${x} real`]), 'Presupuesto anual', 'Real anual', 'Variación', '% ejercido'];
+      const lin = (r, tipo) => [r.codigo || '', r.nombre, tipo, ...r.presupuesto.flatMap((p, i) => [P(p), P(r.real[i])]), P(r.anual), P(r.ejercido), P(r.anual - r.ejercido), r.anual ? r.ejercido / r.anual : ''];
+      const res = [['Código', 'Rubro', 'Tipo', 'Presupuesto anual', 'Real', 'Variación', '% ejercido'], ...d.grupos.flatMap(g => [...g.rows.map(r => [r.codigo, r.nombre, g.nombre, P(r.anual), P(r.ejercido), P(r.anual - r.ejercido), r.anual ? r.ejercido / r.anual : '']),
+        ['', `Subtotal ${g.nombre.toLowerCase()}`, g.nombre, P(g.anual), P(g.ejercido), P(g.variacion), g.anual ? g.ejercido / g.anual : '']]), ['', 'Total de egresos', '', P(t.anual), P(t.ejercido), P(t.variacion), t.anual ? t.ejercido / t.anual : '']];
+      return excel(`liquidacion-egresos-${ej}.xlsx`, 'Liquidación anual de egresos', `Ejercicio ${ej}`, [
+        { nombre: 'Por rubro', filas: res, moneda: [3, 4, 5], pct: [6], subtotales: res.map((f, i) => /^Subtotal/.test(f[1]) ? i : -1).filter(i => i > 0) },
+        { nombre: 'Mes con mes', filas: [enc, ...d.grupos.flatMap(g => [...g.rows.map(r => lin(r, g.nombre)), lin({ ...g, nombre: `Subtotal ${g.nombre.toLowerCase()}` }, g.nombre)]), lin({ ...t, nombre: 'Total de egresos' }, '')],
+          moneda: enc.map((_, i) => i).filter(i => i >= 3 && i < enc.length - 1), pct: [enc.length - 1] },
+        { nombre: 'Por mes', filas: [['Mes', 'Presupuesto', 'Real', 'Variación', 'Presupuesto acumulado', 'Real acumulado'], ...MESES_L.map((m_, i) => [m_, P(t.presupuesto[i]), P(t.real[i]), P(t.presupuesto[i] - t.real[i]), P(t.presupuesto.slice(0, i + 1).reduce((a, b) => a + b, 0)), P(t.real.slice(0, i + 1).reduce((a, b) => a + b, 0))]),
+          ['Total', P(t.anual), P(t.ejercido), P(t.variacion), '', '']], moneda: [1, 2, 3, 4, 5] },
+      ]);
+    },
+  });
+}

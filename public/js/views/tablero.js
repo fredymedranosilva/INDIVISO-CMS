@@ -52,7 +52,6 @@ export async function render(el, ctx) {
   const hallazgo = [
     k.emitido ? html`Se ha cobrado <b>${pct(k.indice_cobranza, 0)}</b> de las cuotas emitidas este mes.` : html`Aún no se emiten las cuotas de ${mesNombre(periodo)}.`,
     k.cartera_vencida ? html` ${k.unidades_morosas > 4 ? html`Cuatro unidades concentran <b>${pesos(vencidoTop)}</b> de <b>${pesos(k.cartera_vencida)}</b> vencido.` : html`${k.unidades_morosas === 1 ? 'Una unidad debe' : `Las ${k.unidades_morosas} unidades con atraso deben`} <b>${pesos(k.cartera_vencida)}</b> vencido.`}` : ' No hay cartera vencida.',
-    p.pagos_por_validar ? html` <b>${p.pagos_por_validar}</b> ${p.pagos_por_validar === 1 ? 'pago reportado espera' : 'pagos reportados esperan'} validación.` : '',
   ];
   const presPct = k.presupuesto_mes ? k.egresos_mes / k.presupuesto_mes : null;
   mount(el, html`
@@ -82,7 +81,6 @@ export async function render(el, ctx) {
         <section class="panel" aria-labelledby="h-pend">
           <header><h2 id="h-pend">Por atender</h2></header>
           <ul class="rows queue">
-            ${cola(`#/c/${S.cid}/cobranza/validar`, 'Pagos reportados por validar', p.pagos_por_validar)}
             ${cola(`#/c/${S.cid}/egresos/aprobar`, 'Egresos por aprobar', p.egresos_por_aprobar)}
             ${cola(`#/c/${S.cid}/egresos/egresos?estado=aprobado`, 'Egresos aprobados por pagar', p.egresos_por_pagar)}
             ${cola(`#/c/${S.cid}/bancos`, 'Movimientos bancarios sin conciliar', p.movs_sin_conciliar)}

@@ -5,9 +5,12 @@ import { guardarBlob } from './xlsx.js';
 
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 const MES3 = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-export const PALETA = ['#1b6fb5', '#f28c38', '#9fcbe9', '#0f8a84', '#f6b951', '#e8596b', '#8c6bc8', '#5bbf63', '#bfc5cc', '#2f4858', '#ff7f50', '#6bc3f0', '#b0855a', '#a1c935', '#d17bd1', '#3d5a80'];
-const TINTA = '#1f2933', SUAVE = '#6b7280', LINEA = '#e5e7eb', BORDE = '#d1d5db', VERDE = '#1e9e48', ROJO = '#c53030';
-export const COLORES = { ingresos: '#2b8be6', egresos: '#f39248', bancos: '#4a7ee6', conciliacion: '#14857a', cxc: '#7a5cc7', morosidad: '#d64545', cuenta: '#178fb3' };
+// Paleta de marca CMS: verdes y dorados alternados para que categorías vecinas se distingan.
+export const PALETA = ['#003329', '#E6A24D', '#5f9c88', '#C58430', '#9cc3b5', '#f1c98f', '#1f5c4c', '#8a5a1f', '#c9d8d1', '#b98a55', '#2f7a66', '#e9d3ac', '#00513f', '#d9a35f', '#7aa898', '#6b7280'];
+const TINTA = '#1F2937', SUAVE = '#6b7280', LINEA = '#ece6da', BORDE = '#e3dccb', VERDE = '#1e9e48', ROJO = '#c53030';
+// Marca: verde CMS (placa, títulos, fondos oscuros), dorado (acentos, nunca texto pequeño), oro viejo (dorado sobre claro), marfil (fondo claro).
+const MARCA = { verde: '#001F19', verde2: '#003329', dorado: '#E6A24D', oro: '#C58430', marfil: '#F6F3EC' };
+export const COLORES = { ingresos: '#003329', egresos: '#003329', bancos: '#003329', conciliacion: '#003329', cxc: '#003329', morosidad: '#003329', cuenta: '#003329' };
 
 export const dinero = c => `${c < 0 ? '-' : ''}$${(Math.abs(c || 0) / 100).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 export const dmy = f => f ? `${f.slice(8, 10)}/${f.slice(5, 7)}/${f.slice(0, 4)}` : '—';
@@ -63,24 +66,25 @@ export class Informe {
     const p = this.pdf, M = this.M;
     p.pagina();
     p.rect(M, 26, this.CW, 9, { fill: this.color, r: 4.5, arriba: true });
+    p.rect(M, 35, this.CW, 2.2, { fill: MARCA.dorado });
     if (primera) {
       if (this.logo) { // logotipo del condominio, a lo más 120 × 48 pt
         const k = Math.min(120 / this.logo.px, 48 / this.logo.py);
         p.imagen(this.logo.jpeg, this.logo.px, this.logo.py, this.logo.px, this.logo.py, M, 48, this.logo.px * k, this.logo.py * k);
       } else {
       // marca: monograma del condominio
-      p.rect(M, 52, 40, 40, { fill: '#0f1b2d', r: 8 });
+      p.rect(M, 52, 40, 40, { fill: MARCA.verde, r: 8 });
       p.trazo([[M + 10, 82], [M + 10, 64], [M + 20, 59], [M + 30, 64], [M + 30, 82]], { color: '#ffffff', lw: 1.6 });
       p.linea(M + 20, 59, M + 20, 82, { color: '#ffffff', lw: 1.6 });
-      p.rect(M + 20.8, 71, 8.4, 10.2, { fill: '#2dd4bf' });
+      p.rect(M + 20.8, 71, 8.4, 10.2, { fill: MARCA.dorado });
       }
       const x = this.W - M;
-      p.texto(this.c.nombre || 'Condominio', x, 64, { size: 15, bold: true, align: 'right', color: '#111827', max: this.CW - 60 });
-      p.texto(this.titulo, x, 82, { size: 12.5, align: 'right', color: '#111827' });
+      p.texto(this.c.nombre || 'Condominio', x, 64, { size: 15, bold: true, align: 'right', color: MARCA.verde, max: this.CW - 60 });
+      p.texto(this.titulo, x, 82, { size: 12.5, align: 'right', color: '#1F2937' });
       if (this.periodo) {
         const w = p.ancho(this.periodo, 10.5, true);
-        p.texto(this.periodo, x, 102, { size: 10.5, bold: true, align: 'right', color: '#111827' });
-        p.texto(this.etiqueta, x - w, 102, { size: 10.5, align: 'right', color: '#111827' });
+        p.texto(this.periodo, x, 102, { size: 10.5, bold: true, align: 'right', color: '#1F2937' });
+        p.texto(this.etiqueta, x - w, 102, { size: 10.5, align: 'right', color: '#1F2937' });
       }
       this.y = 124;
     } else {
@@ -93,7 +97,8 @@ export class Informe {
   espacio(h = 10) { this.y += h; }
   seccion(t, sub) {
     this.necesita(sub ? 50 : 36);
-    this.pdf.texto(t, this.M, this.y + 14, { size: 12, bold: true, color: '#111827' });
+    this.pdf.rect(this.M, this.y + 4, 3, 13, { fill: MARCA.dorado, r: 1.5 });
+    this.pdf.texto(t, this.M + 9, this.y + 14, { size: 12, bold: true, color: MARCA.verde });
     if (sub) this.pdf.texto(sub, this.M, this.y + 28, { size: 8.5, color: SUAVE, max: this.CW });
     this.y += sub ? 38 : 24;
   }
@@ -118,7 +123,7 @@ export class Informe {
       this.pdf.rect(x, this.y, w, h, { stroke: BORDE, lw: 0.8, r: 6 });
       this.pdf.rect(x, this.y, 4, h, { fill: k.color || this.color, r: 2 });
       this.pdf.texto(k.label, x + 12, this.y + 18, { size: 8, color: SUAVE, max: w - 18 });
-      this.pdf.texto(k.valor, x + 12, this.y + 38, { size: k.valor.length > 14 ? 11 : 13, bold: true, color: k.tinta || '#111827', max: w - 18 });
+      this.pdf.texto(k.valor, x + 12, this.y + 38, { size: k.valor.length > 14 ? 11 : 13, bold: true, color: k.tinta || '#1F2937', max: w - 18 });
     });
     this.y += h + 14;
   }
@@ -137,11 +142,11 @@ export class Informe {
       p.sector(cx, cy, r, R, a, b - (datos.length > 1 ? 0.004 : 0), { fill: d.color });
       if (d.valor / total >= 0.05) {
         const m = (a + b) / 2, rr = (r + R) / 2;
-        p.texto(pct(d.valor, total, 1), cx + rr * Math.sin(m), cy - rr * Math.cos(m) + 3, { size: 8, bold: true, align: 'center', color: claro(d.color) ? '#111827' : '#ffffff' });
+        p.texto(pct(d.valor, total, 1), cx + rr * Math.sin(m), cy - rr * Math.cos(m) + 3, { size: 8, bold: true, align: 'center', color: claro(d.color) ? '#1F2937' : '#ffffff' });
       }
       a = b;
     }
-    p.texto(formato(total), cx, cy + 2, { size: total >= 1e9 ? 8.5 : 9.5, bold: true, align: 'center', color: '#111827' });
+    p.texto(formato(total), cx, cy + 2, { size: total >= 1e9 ? 8.5 : 9.5, bold: true, align: 'center', color: '#1F2937' });
     p.texto(centro, cx, cy + 14, { size: 7.5, align: 'center', color: SUAVE });
     const lx = t.x + 270, filas = Math.min(datos.length, Math.floor((alto - 24) / 17));
     let ly = cy - filas * 17 / 2 + 6;
@@ -208,7 +213,7 @@ export class Informe {
   }
 
   // Línea con área (saldos)
-  lineaEn(x, y, w, h, etiquetas, valores, { color = '#3cc13b' } = {}) {
+  lineaEn(x, y, w, h, etiquetas, valores, { color = '#2f8f6a' } = {}) {
     const p = this.pdf;
     const mn0 = Math.min(...valores), mx0 = Math.max(...valores);
     let mn = mn0, mx = mx0;
@@ -237,9 +242,9 @@ export class Informe {
     const cab = () => {
       if (!encabezado) return;
       this.necesita(24);
-      p.rect(M, this.y, this.CW, 22, { fill: '#f3f4f6', r: 5, arriba: true });
+      p.rect(M, this.y, this.CW, 22, { fill: MARCA.marfil, r: 5, arriba: true });
       p.linea(M, this.y + 22, M + this.CW, this.y + 22, { color: BORDE, lw: 1 });
-      cols.forEach((c, i) => p.texto(c.t, c.align === 'right' ? xs[i] + ws[i] - 7 : c.align === 'center' ? xs[i] + ws[i] / 2 : xs[i] + 7, this.y + 14.5, { size: 8, bold: true, color: '#374151', align: c.align || 'left', max: ws[i] - 10 }));
+      cols.forEach((c, i) => p.texto(c.t, c.align === 'right' ? xs[i] + ws[i] - 7 : c.align === 'center' ? xs[i] + ws[i] / 2 : xs[i] + 7, this.y + 14.5, { size: 8, bold: true, color: MARCA.verde, align: c.align || 'left', max: ws[i] - 10 }));
       this.y += 22;
     };
     cab();
@@ -254,7 +259,7 @@ export class Informe {
       const y = this.y;
       if (est === 'banda') p.rect(M, y, this.CW, h, { fill: this.color, r: F.ultima ? 5 : 0, abajo: true });
       else if (est === 'total') p.rect(M, y, this.CW, h, { fill: aclarar(this.color, 0.55) });
-      else if (est === 'detalle' || (F.zebra ?? (!est && n % 2 === 1))) p.rect(M, y, this.CW, h, { fill: '#f8f9fa' });
+      else if (est === 'detalle' || (F.zebra ?? (!est && n % 2 === 1))) p.rect(M, y, this.CW, h, { fill: '#FBF9F4' });
       if (est !== 'banda' && est !== 'total') p.linea(M, y + h, M + this.CW, y + h, { color: LINEA, lw: 0.6 });
       if (F.swatch) p.rect(xs[0] + 7, y + h / 2 - 5, 10, 10, { fill: F.swatch, r: 2.5 });
       F.celdas.forEach((c, i) => {
@@ -278,7 +283,7 @@ export class Informe {
       const col = i % columnas, fila = Math.floor(i / columnas);
       const x = t.x + 14 + col * w, y = t.y + 14 + fila * 30;
       p.texto(k, x, y + 8, { size: 7.5, color: SUAVE });
-      p.texto(v ?? '—', x, y + 22, { size: opc.size || 10, bold: true, color: opc.color || '#111827', max: w - 24 });
+      p.texto(v ?? '—', x, y + 22, { size: opc.size || 10, bold: true, color: opc.color || '#1F2937', max: w - 24 });
     });
   }
   banda(texto, { size = 11 } = {}) {
@@ -293,13 +298,14 @@ export class Informe {
     for (let i = 1; i <= n; i++) {
       p.enPagina(i);
       const y = this.H - 52;
-      p.rect(this.M, y, this.CW, 26, { fill: '#d1d5db', r: 8, abajo: true });
-      p.texto(this.c.nombre || '', this.M + 14, y + 16.5, { size: 8, bold: true, color: '#111827', max: this.CW / 2 });
+      p.rect(this.M, y, this.CW, 26, { fill: MARCA.marfil, r: 8, abajo: true });
+      p.linea(this.M, y, this.M + this.CW, y, { color: MARCA.dorado, lw: 1.2 });
+      p.texto(this.c.nombre || '', this.M + 14, y + 16.5, { size: 8, bold: true, color: '#1F2937', max: this.CW / 2 });
       const der = `Página ${i} de ${n}`;
-      p.texto(der, this.M + this.CW - 14, y + 16.5, { size: 8, color: '#111827', align: 'right' });
+      p.texto(der, this.M + this.CW - 14, y + 16.5, { size: 8, color: '#1F2937', align: 'right' });
       const wd = p.ancho(der, 8) + 18, wf = p.ancho(f, 8, true);
-      p.texto(f, this.M + this.CW - 14 - wd, y + 16.5, { size: 8, bold: true, color: '#111827', align: 'right' });
-      p.texto('Fecha de descarga: ', this.M + this.CW - 14 - wd - wf, y + 16.5, { size: 8, color: '#111827', align: 'right' });
+      p.texto(f, this.M + this.CW - 14 - wd, y + 16.5, { size: 8, bold: true, color: '#1F2937', align: 'right' });
+      p.texto('Fecha de descarga: ', this.M + this.CW - 14 - wd - wf, y + 16.5, { size: 8, color: '#1F2937', align: 'right' });
     }
     void marca;
     await guardarBlob(await p.blob(), nombre);
@@ -336,7 +342,7 @@ function tablaDesglose(R, titulo, filas, total, { col = 'Concepto', n = 'Movimie
 // ---------- Reporte de ingresos ----------
 export async function pdfIngresos(d, condominio) {
   const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Reporte de ingresos', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.ingresos });
-  const COL = { pendientes: '#c8c8c8', ordinarios: '#a9d3ec', extraordinarios: '#1279a8', otros: '#f6b951' };
+  const COL = { pendientes: '#cfc8b8', ordinarios: '#9cc3b5', extraordinarios: '#C58430', otros: '#f1c98f' };
   const grupos = d.grupos.filter(g => g.total);
   const varPct = (x, y) => y ? `${x >= y ? '+' : ''}${((x - y) / Math.abs(y) * 100).toFixed(1)}%` : '—';
   R.kpis([{ label: 'Total de ingresos', valor: dinero(d.total) }, { label: 'Periodo anterior', valor: dinero(d.anterior?.total || 0) }, { label: 'Variación', valor: varPct(d.total, d.anterior?.total), tinta: d.anterior && d.total < d.anterior.total ? ROJO : VERDE }, { label: 'Pagos recibidos', valor: String(d.pagos) }]);
@@ -354,8 +360,8 @@ export async function pdfIngresos(d, condominio) {
   if (d.mensual?.length) {
     R.seccion(`Ingresos mes con mes · ${d.anio}`, 'Lo cobrado en cada mes del año, clasificado por lo que pagó.');
     const ms = d.mensual;
-    R.barrasV(ms.map(x => MES3[+x.periodo.slice(5) - 1]), [{ nombre: 'Ordinarios', valores: ms.map(x => x.ordinarios || 0), color: '#1b6fb5' }, { nombre: 'Extraordinarios', valores: ms.map(x => x.extraordinarios || 0), color: '#f28c38' },
-      { nombre: 'Pendientes de aplicar', valores: ms.map(x => x.pendientes || 0), color: '#bfc5cc' }, { nombre: 'Otros', valores: ms.map(x => x.otros || 0), color: '#5bbf63' }]);
+    R.barrasV(ms.map(x => MES3[+x.periodo.slice(5) - 1]), [{ nombre: 'Ordinarios', valores: ms.map(x => x.ordinarios || 0), color: '#003329' }, { nombre: 'Extraordinarios', valores: ms.map(x => x.extraordinarios || 0), color: '#E6A24D' },
+      { nombre: 'Pendientes de aplicar', valores: ms.map(x => x.pendientes || 0), color: '#cfc8b8' }, { nombre: 'Otros', valores: ms.map(x => x.otros || 0), color: '#5f9c88' }]);
     const t = k => ms.reduce((a, x) => a + (x[k] || 0), 0);
     R.tabla([{ t: 'Mes' }, { t: 'Ordinarios', w: 88, align: 'right' }, { t: 'Extraordinarios', w: 88, align: 'right' }, { t: 'Pend. aplicar', w: 80, align: 'right' }, { t: 'Otros', w: 70, align: 'right' }, { t: 'Total', w: 92, align: 'right' }],
       [...ms.map(x => [MESES[+x.periodo.slice(5) - 1], dinero(x.ordinarios || 0), dinero(x.extraordinarios || 0), dinero(x.pendientes || 0), dinero(x.otros || 0), dinero(x.total)]),
@@ -380,7 +386,7 @@ export async function pdfIngresos(d, condominio) {
 export async function pdfEgresos(d, condominio) {
   const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Reporte de egresos', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.egresos });
   const grupos = d.grupos.filter(g => g.total);
-  const COL = { ordinarios: '#fb8f4a', extraordinarios: '#ffbb55' };
+  const COL = { ordinarios: '#003329', extraordinarios: '#E6A24D' };
   const varPct = (x, y) => y ? `${x >= y ? '+' : ''}${((x - y) / Math.abs(y) * 100).toFixed(1)}%` : '—';
   R.kpis([{ label: 'Total de egresos', valor: dinero(d.total) }, { label: 'Periodo anterior', valor: dinero(d.anterior?.total || 0) }, { label: 'Pagado', valor: dinero(d.pagado) }, { label: d.presupuesto ? 'Ejercido del presupuesto' : 'Por pagar', valor: d.presupuesto ? (d.presupuesto.total ? `${(d.presupuesto.ejercido / d.presupuesto.total * 100).toFixed(0)}%` : '—') : dinero(d.por_pagar), tinta: d.presupuesto && d.presupuesto.ejercido > d.presupuesto.total ? ROJO : undefined }]);
   R.dona(grupos.map(g => ({ label: g.nombre, valor: g.total, color: COL[g.clave] })), { centro: 'Total de egresos' });
@@ -395,7 +401,7 @@ export async function pdfEgresos(d, condominio) {
   if (d.mensual?.length) {
     const ms = d.mensual;
     R.seccion(`Egresos mes con mes · ${d.anio}`, 'Gasto aprobado de cada mes contra el presupuesto.');
-    R.barrasV(ms.map(x => MES3[+x.periodo.slice(5) - 1]), [{ nombre: 'Ordinarios', valores: ms.map(x => x.ordinarios || 0), color: '#fb8f4a' }, { nombre: 'Extraordinarios', valores: ms.map(x => x.extraordinarios || 0), color: '#ffbb55' }, { nombre: 'Presupuesto', valores: ms.map(x => x.presupuesto || 0), color: '#bfc5cc' }]);
+    R.barrasV(ms.map(x => MES3[+x.periodo.slice(5) - 1]), [{ nombre: 'Ordinarios', valores: ms.map(x => x.ordinarios || 0), color: '#003329' }, { nombre: 'Extraordinarios', valores: ms.map(x => x.extraordinarios || 0), color: '#E6A24D' }, { nombre: 'Presupuesto', valores: ms.map(x => x.presupuesto || 0), color: '#cfc8b8' }]);
     const t = k => ms.reduce((a, x) => a + (x[k] || 0), 0);
     R.tabla([{ t: 'Mes' }, { t: 'Ordinarios', w: 95, align: 'right' }, { t: 'Extraordinarios', w: 95, align: 'right' }, { t: 'Total', w: 95, align: 'right' }, { t: 'Presupuesto', w: 95, align: 'right' }],
       [...ms.map(x => [MESES[+x.periodo.slice(5) - 1], dinero(x.ordinarios || 0), dinero(x.extraordinarios || 0), dinero(x.total), dinero(x.presupuesto || 0)]),
@@ -417,13 +423,46 @@ export async function pdfEgresos(d, condominio) {
   await R.guardar(`reporte-egresos-${slug(condominio.nombre)}-${nombrePeriodo(d.anio, d.mes)}.pdf`);
 }
 
+// ---------- Liquidación anual de egresos (real contra presupuesto) ----------
+export async function pdfLiquidacionEgresos(d, condominio) {
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Liquidación anual de egresos', periodo: `Ejercicio ${d.ejercicio}`, etiqueta: '', color: COLORES.egresos });
+  const t = d.totales, pe = (e, a) => a ? `${(e / a * 100).toFixed(0)}%` : '—';
+  const sobre = (e, a) => e > a && a ? { 3: ROJO, 4: ROJO } : undefined;
+  R.kpis([{ label: 'Presupuesto anual', valor: dinero(t.anual) }, { label: 'Gasto real', valor: dinero(t.ejercido) },
+    { label: 'Variación', valor: dinero(t.variacion), tinta: t.variacion < 0 ? ROJO : undefined }, { label: '% ejercido', valor: pe(t.ejercido, t.anual) }]);
+  R.parrafo(`${d.presupuesto ? `Presupuesto versión ${d.presupuesto.version} (${d.presupuesto.estado}).` : 'Sin presupuesto capturado para el ejercicio.'} Gasto real según el libro contable${d.cerrado ? ' del ejercicio completo' : `, hasta ${MESES[Math.max(0, d.mes_actual - 1)].toLowerCase()}`}. Variación positiva = gasto por debajo del presupuesto.`, { size: 8.5, color: SUAVE });
+  R.seccion('Real contra presupuesto por mes');
+  R.barrasV(MES3, [{ nombre: 'Presupuesto', valores: t.presupuesto, color: aclarar(R.color, 0.6) }, { nombre: 'Real', valores: t.real, color: R.color }]);
+  R.seccion('Liquidación por rubro', 'Cada rubro con su código único, agrupado en gasto fijo y variable.');
+  const cols = [{ t: 'Código', w: 52 }, { t: 'Rubro', wrap: true }, { t: 'Presupuesto', w: 86, align: 'right' }, { t: 'Real', w: 86, align: 'right' }, { t: 'Variación', w: 82, align: 'right' }, { t: '% ejer.', w: 50, align: 'right' }];
+  const filas = [];
+  for (const g of d.grupos) {
+    filas.push({ celdas: ['', g.nombre, '', '', '', ''], estilo: 'grupo' });
+    for (const r of g.rows) filas.push({ celdas: [r.codigo, r.nombre, dinero(r.anual), dinero(r.ejercido), dinero(r.anual - r.ejercido), pe(r.ejercido, r.anual)], tintas: sobre(r.ejercido, r.anual) });
+    filas.push({ celdas: ['', `Subtotal ${g.nombre.toLowerCase()}`, dinero(g.anual), dinero(g.ejercido), dinero(g.variacion), pe(g.ejercido, g.anual)], estilo: 'subtotal' });
+  }
+  filas.push({ celdas: ['', 'Total de egresos', dinero(t.anual), dinero(t.ejercido), dinero(t.variacion), pe(t.ejercido, t.anual)], estilo: 'banda', ultima: true });
+  R.tabla(cols, filas, { size: 8.5 });
+  R.nueva(); R.seccion('Resumen mensual', 'Presupuesto y gasto real de cada mes, con acumulados.');
+  let ap = 0, ar = 0;
+  R.tabla([{ t: 'Mes' }, { t: 'Presupuesto', w: 84, align: 'right' }, { t: 'Real', w: 84, align: 'right' }, { t: 'Variación', w: 84, align: 'right' }, { t: 'Pres. acumulado', w: 90, align: 'right' }, { t: 'Real acumulado', w: 90, align: 'right' }],
+    [...MESES.map((n, i) => { ap += t.presupuesto[i]; ar += t.real[i]; return { celdas: [n, dinero(t.presupuesto[i]), dinero(t.real[i]), dinero(t.presupuesto[i] - t.real[i]), dinero(ap), dinero(ar)], tintas: sobre(t.real[i], t.presupuesto[i]) }; }),
+      { celdas: ['Total', dinero(t.anual), dinero(t.ejercido), dinero(t.variacion), '', ''], estilo: 'banda', ultima: true }], { size: 8.5 });
+  R.nueva(); R.seccion('Gasto real mes con mes por rubro', 'Importes en miles de pesos. En rojo, meses que superan su presupuesto.');
+  const k = c => c ? (c / 100000).toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '—';
+  const fm = r => ({ celdas: [r.codigo || '', r.nombre, ...r.real.map(k), k(r.ejercido)], tintas: Object.fromEntries(r.real.map((x, i) => [i + 2, x > r.presupuesto[i] && r.presupuesto[i] ? ROJO : null]).filter(e => e[1])) });
+  R.tabla([{ t: 'Cód.', w: 30 }, { t: 'Rubro', wrap: true }, ...MES3.map(m => ({ t: m, w: 30, align: 'right' })), { t: 'Total', w: 40, align: 'right' }],
+    [...d.grupos.flatMap(g => [...g.rows.map(fm), { ...fm({ ...g, nombre: `Subtotal ${g.nombre.toLowerCase()}` }), estilo: 'subtotal', tintas: undefined }]), { ...fm({ ...t, nombre: 'Total' }), estilo: 'banda', ultima: true, tintas: undefined }], { size: 6.4 });
+  await R.guardar(`liquidacion-egresos-${slug(condominio.nombre)}-${d.ejercicio}.pdf`);
+}
+
 // ---------- Saldos de bancos y cajas ----------
 export async function pdfBancos(d, condominio) {
   const periodo = d.desde === d.hasta ? mesNombre(d.hasta) : `${mesNombre(d.desde)} a ${mesNombre(d.hasta)}`;
   const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Saldo de bancos y cajas', periodo, color: COLORES.bancos });
   const T = d.totales;
-  R.kpis([{ label: 'Saldo anterior', valor: dinero(T.anterior) }, { label: 'Ingresos', valor: dinero(T.ingresos), color: '#3cc13b' }, { label: 'Egresos', valor: dinero(T.egresos), color: COLORES.egresos }, { label: 'Saldo final', valor: dinero(T.final) }]);
-  const verde = '#3cc13b', azul = '#2563eb';
+  R.kpis([{ label: 'Saldo anterior', valor: dinero(T.anterior) }, { label: 'Ingresos', valor: dinero(T.ingresos), color: '#2f8f6a' }, { label: 'Egresos', valor: dinero(T.egresos), color: COLORES.egresos }, { label: 'Saldo final', valor: dinero(T.final) }]);
+  const verde = '#2f8f6a', azul = '#C58430';
   const g = 14, w = (R.CW - g) / 2, h = 214;
   d.cuentas.forEach((c, i) => {
     if (i % 2 === 0 && R.necesita(h + 14)) { /* nueva página */ }
@@ -470,7 +509,7 @@ export async function pdfConciliacion(d, condominio) {
       ['Saldo en libros', dinero(c.libros)],
       { celdas: ['Diferencia por aclarar', dinero(c.diferencia)], estilo: 'banda', ultima: true },
     ], { size: 9 });
-    const lista = (t, rows, fn) => { if (!rows.length) return; R.necesita(60); R.pdf.texto(t, R.M, R.y + 10, { size: 9.5, bold: true, color: '#111827' }); R.y += 16; R.tabla([{ t: 'Fecha', w: 66 }, { t: 'Descripción', wrap: true }, { t: 'Importe', w: 100, align: 'right' }], rows.slice(0, 60).map(fn), { size: 8 }); };
+    const lista = (t, rows, fn) => { if (!rows.length) return; R.necesita(60); R.pdf.texto(t, R.M, R.y + 10, { size: 9.5, bold: true, color: '#1F2937' }); R.y += 16; R.tabla([{ t: 'Fecha', w: 66 }, { t: 'Descripción', wrap: true }, { t: 'Importe', w: 100, align: 'right' }], rows.slice(0, 60).map(fn), { size: 8 }); };
     lista('Movimientos del banco sin identificar', c.no_registrados, m => [dmy(m.fecha), `${m.descripcion || ''}${m.referencia ? ` · ${m.referencia}` : ''}`, dinero(m.abono_cents || -m.cargo_cents)]);
     lista('Depósitos en tránsito (en libros, no en el banco)', c.depositos_en_transito, m => [dmy(m.fecha), `${m.documento}${m.referencia ? ` · ${m.referencia}` : ''}`, dinero(m.monto)]);
     lista('Pagos en tránsito (en libros, no en el banco)', c.pagos_en_transito, m => [dmy(m.fecha), m.documento, dinero(-m.monto)]);
@@ -479,7 +518,7 @@ export async function pdfConciliacion(d, condominio) {
   await R.guardar(`conciliacion-bancaria-${slug(condominio.nombre)}-${d.corte}.pdf`);
 }
 
-const BANDAS = [['por_vencer', 'Por vencer', '#9fcbe9'], ['d30', '1 a 30 días', '#f6b951'], ['d60', '31 a 60 días', '#f28c38'], ['d90', '61 a 90 días', '#e8596b'], ['d90mas', 'Más de 90 días', '#b42318']];
+const BANDAS = [['por_vencer', 'Por vencer', '#9cc3b5'], ['d30', '1 a 30 días', '#f1c98f'], ['d60', '31 a 60 días', '#E6A24D'], ['d90', '61 a 90 días', '#e8596b'], ['d90mas', 'Más de 90 días', '#b42318']];
 
 // ---------- Cuentas por cobrar ----------
 export async function pdfCxc(d, condominio) {
@@ -526,7 +565,7 @@ export async function pdfMorosidad(d, condominio) {
 // ---------- Estado de cuenta ----------
 const TIPO = { cuota: 'Cuota', extraordinaria: 'Extraordinaria', recargo: 'Recargo', multa: 'Multa', otro: 'Cargo', pago: 'Pago', descuento: 'Descuento', cancelacion: 'Cancelación', cancelacion_pago: 'Pago cancelado', saldo_inicial: 'Saldo inicial', cargo: 'Cargo', abono: 'Abono' };
 const ESTATUS = { condonada: 'Condonada', pagada: 'Pagada', parcial: 'Pago parcial', pendiente: 'No pagada', cancelada: 'Cancelada', aplicado: 'Aplicado', cancelado: 'Cancelado' };
-const COLOR_EST = { condonada: SUAVE, pagada: '#2563eb', parcial: '#2563eb', pendiente: ROJO, aplicado: VERDE, cancelada: SUAVE, cancelado: SUAVE };
+const COLOR_EST = { condonada: SUAVE, pagada: '#C58430', parcial: '#C58430', pendiente: ROJO, aplicado: VERDE, cancelada: SUAVE, cancelado: SUAVE };
 const saldoTxt = s => s < 0 ? `+ ${dinero(-s)}` : dinero(s);
 
 function cuerpoEstadoCuenta(R, d) {

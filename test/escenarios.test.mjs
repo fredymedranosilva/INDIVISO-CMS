@@ -151,22 +151,13 @@ async function operar(C) {
   for (const x of pend.filter(y => y.id !== dep.id)) { const cs = await cont.ok('GET', a(`/banco-movs/${x.id}/candidatos`)); if (cs[0]) await cont.ok('POST', a(`/banco-movs/${x.id}/conciliar`), { tipo: cs[0].tipo, id: cs[0].id }); }
   assert.equal((await cont.ok('GET', a(`/bancos/${bOp}/movimientos?estado=pendientes`))).length, 0, 'todo el mes anterior queda conciliado');
 
-  // ---- 7. El residente reporta un pago con comprobante; la administración lo valida
-  const arch = await res.ok('POST', a('/archivos'), { nombre: 'transferencia.pdf', base64: PDF_B64 });
-  const rep = await res.ok('POST', a('/mi/pagos'), { unidad_id: us[0].id, fecha: HOY, monto_cents: 100000, metodo: 'transferencia', referencia: `APP${cid}`, comprobante_id: arch.id, idem_key: idem() });
-  assert.equal(rep.estado, 'por_validar');
-  assert.equal((await res.post(a(`/pagos/${rep.id}/validar`), { aceptar: true })).status, 403);
-  const val = await cont.ok('POST', a(`/pagos/${rep.id}/validar`), { aceptar: true, cuenta_banco_id: bOp });
+  // ---- 7. Sin «pagos por validar»: el residente no reporta pagos; la administración los registra
+  assert.equal((await res.post(a('/mi/pagos'), { unidad_id: us[0].id, fecha: HOY, monto_cents: 100000, metodo: 'transferencia', idem_key: idem() })).status, 404);
+  const val = await cont.ok('POST', a('/pagos'), { unidad_id: us[0].id, fecha: HOY, monto_cents: 100000, metodo: 'transferencia', referencia: `APP${cid}`, cuenta_banco_id: bOp, idem_key: idem() });
   assert.ok(val.folio > 0);
   const mi = await res.ok('GET', a('/mi'));
   assert.equal(mi.unidades.length, 1); assert.equal(mi.unidades[0].unidad.id, us[0].id);
 
-  // ---- 8. Comunidad: aviso y votación
-  await admin.ok('POST', a('/comunidad'), { tipo: 'aviso', titulo: 'Corte de agua el sábado', cuerpo: 'De 9 a 13 h por mantenimiento de cisterna.' });
-  const enc = await com.ok('POST', a('/encuestas'), { pregunta: '¿Se aprueba pintar la fachada?', cierra: addDays(HOY, 7), ponderada: true, opciones: ['Sí', 'No'] });
-  const op = (await res.ok('GET', a('/encuestas'))).find(e => e.id === enc).opciones[0].id;
-  await res.ok('POST', a(`/encuestas/${enc}/votar`), { opcion_id: op, unidad_id: us[0].id });
-  assert.equal((await res.post(a(`/encuestas/${enc}/votar`), { opcion_id: op, unidad_id: us[0].id })).status, 409, 'un voto por unidad');
   return C;
 }
 

@@ -10,7 +10,7 @@ Indiviso es el esqueleto del panel administrativo: cada sección es un módulo i
    `{ id, titulo, grupo, icono, perm, cargar: () => import('./views/<id>.js') }`.
    El menú, el enrutador y los permisos se arman solos.
 3. **Servidor.** Agregue sus rutas al arreglo `apiRoutes` en `server/api.mjs` (o en un archivo propio, como
-   `server/comunidad.mjs`) con la forma `['GET', `${C}/mi-ruta`, { perm: 'ver' }, ctx => ...]`.
+   `server/importar.mjs`) con la forma `['GET', `${C}/mi-ruta`, { perm: 'ver' }, ctx => ...]`.
    Toda ruta bajo `/api/c/:cid` ya valida sesión, 2FA, CSRF, membresía y permiso; filtre siempre por `ctx.cid`
    y use `escribir(ctx, accion, entidad, fn)` para que cada cambio quede en la bitácora dentro de una transacción.
 4. **Tablas.** Agregue `CREATE TABLE IF NOT EXISTS` al esquema de `server/db.mjs` (con `condominio_id`) y, para

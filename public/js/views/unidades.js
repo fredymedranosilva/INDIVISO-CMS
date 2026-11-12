@@ -19,7 +19,7 @@ export async function render(el, ctx) {
   const totInd = us.filter(u => u.activo).reduce((a, u) => a + u.indiviso_ppm, 0);
   mount(el, html`
     <div class="title-row"><div><h1>Unidades y residentes</h1><p class="sub">${us.filter(u => u.activo).length} unidades activas · indivisos suman ${(totInd / 10000).toFixed(4)}% ${totInd === 1000000 ? '' : html`<b class="neg-t">(deben sumar 100%)</b>`} · cuota mensual total ${pesos(us.filter(u => u.activo).reduce((a, u) => a + u.cuota_cents, 0))}</p></div>
-      <div class="actions"><button class="btn ghost" data-action="exportar">Exportar a Excel</button>${puede('config') ? html`<button class="btn" data-action="importar">Importar directorio</button><button class="btn" data-action="saldos">Saldos iniciales</button><button class="btn" data-action="nueva">Nueva unidad</button>` : ''}${puede('capturar') ? html`<button class="btn" data-action="persona">Agregar residente</button>` : ''}</div></div>
+      <div class="actions"><button class="btn ghost" data-action="exportar">Exportar a Excel</button>${puede('config') ? html`<button class="btn" data-action="importar">Importar directorio</button><button class="btn" data-action="cuotas">Importar cuotas</button><button class="btn" data-action="saldos">Saldos iniciales</button><button class="btn" data-action="nueva">Nueva unidad</button>` : ''}${puede('capturar') ? html`<button class="btn" data-action="persona">Agregar residente</button>` : ''}</div></div>
     <form class="filters" data-buscar><label class="search"><span class="sr">Buscar</span><input name="q" value="${qtxt}" placeholder="Unidad, propietario, referencia o correo"></label><button class="btn">Buscar</button></form>
     <section class="panel flush"><header><h2>${rows.length} unidades</h2></header>
     ${tabla([
@@ -36,6 +36,7 @@ export async function render(el, ctx) {
   ctx.acciones({ nueva: () => editarUnidad(null, ctx), persona: () => nuevaPersona(us, null, ctx),
     exportar: () => descargarPlantilla('directorio'),
     importar: () => abrirImportacion('directorio', { onOk: () => { invalidar(); ctx.recargar(); } }),
+    cuotas: () => abrirImportacion('cuotas', { onOk: () => { invalidar(); ctx.recargar(); } }),
     saldos: () => abrirImportacion('saldos', { onOk: () => { invalidar(); ctx.recargar(); } }) });
 }
 

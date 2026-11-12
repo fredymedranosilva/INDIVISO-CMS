@@ -478,7 +478,15 @@ export function openDb(path = DB_PATH) {
 }
 
 // Columnas agregadas después de la primera versión: se añaden a bases existentes sin perder datos.
+// Rubros del catálogo base que son gasto fijo (contratos y cuotas periódicas); el resto es variable.
+export const GASTO_FIJO = ['5201', '5202', '5203', '5301', '5401', '5402', '5403', '5501'];
+export function tipoGastoPorDefecto(db) {
+  db.prepare(`UPDATE cuentas SET tipo_gasto = CASE WHEN codigo IN (${GASTO_FIJO.map(() => '?').join(',')}) THEN 'fijo' ELSE 'variable' END
+    WHERE tipo = 'egreso' AND tipo_gasto IS NULL`).run(...GASTO_FIJO);
+}
+
 const COLUMNAS = [
+  ['cuentas', 'tipo_gasto', "TEXT CHECK (tipo_gasto IN ('fijo','variable'))"], // rubros de egreso: gasto fijo o variable
   ['condominios', 'pronto_pago_bp', 'INTEGER NOT NULL DEFAULT 0 CHECK (pronto_pago_bp BETWEEN 0 AND 5000)'],
   ['condominios', 'pronto_pago_dia', 'INTEGER NOT NULL DEFAULT 0 CHECK (pronto_pago_dia BETWEEN 0 AND 28)'],
   ['cargos', 'fondo_cuenta_id', 'INTEGER REFERENCES cuentas(id)'],    // fondo que recibe la aportación (NULL = fondo de reserva)
@@ -496,6 +504,7 @@ function migrar(db) {
   for (const [t, c, def] of COLUMNAS) {
     if (!db.prepare(`SELECT 1 FROM pragma_table_info('${t}') WHERE name = ?`).get(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`);
   }
+  tipoGastoPorDefecto(db);
   db.exec('DROP TRIGGER IF EXISTS t_pol_periodo'); // sustituido por t_pol_periodo2 (permite asentar el cierre de ejercicio)
 }
 

@@ -3,7 +3,7 @@ import { S, capi, html, raw, mount, $, pesos, fecha, hoy, addMonths, periodoActu
 import { bancos, subirArchivo, pedirMotivo } from './comun.js';
 import { refrescarContadores } from '../app.js';
 import { abrirImportacion } from './importar.js';
-import { egresosVista } from './finrep.js';
+import { egresosVista, liquidacionEgresosVista } from './finrep.js';
 
 export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'egresos').split('?');
@@ -12,11 +12,12 @@ export async function render(el, ctx) {
   const [t, c] = await Promise.all([capi('/tablero'), capi('/config')]);
   mount(el, html`<div class="title-row"><div><h1>Egresos</h1><p class="sub">Todo egreso de ${pesos(c.umbral_aprobacion_cents)} o más, y todo uso del fondo de reserva, requiere aprobación de un usuario distinto a quien lo capturó.</p></div>
     <div class="actions">${puede('capturar') ? html`<button class="btn" data-action="importarEgresos">Importar desde Excel</button><button class="btn primary" data-action="nuevo">Capturar egreso</button>` : ''}</div></div>
-    ${tabs([['egresos', 'Egresos'], ['resumen', 'Reporte mensual'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['porpagar', 'Cuentas por pagar'], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
+    ${tabs([['egresos', 'Egresos'], ['resumen', 'Reporte mensual'], ['liquidacion', 'Liquidación anual'], ['aprobar', 'Por aprobar', t.pendientes.egresos_por_aprobar], ['porpagar', 'Cuentas por pagar'], ['proveedores', 'Proveedores']], sub, ctx.base)}<div id="eg-body"></div>`);
   ctx.acciones({ nuevo: () => capturar(ctx), importarEgresos: () => abrirImportacion('egresos', { onOk: () => ctx.recargar() }) });
   const body = $('#eg-body', el);
   if (sub === 'proveedores') return proveedores(body, ctx);
   if (sub === 'resumen') return egresosVista(body, ctx, q, `${ctx.base}/resumen`);
+  if (sub === 'liquidacion') return liquidacionEgresosVista(body, ctx, q, `${ctx.base}/liquidacion`);
   if (sub === 'porpagar') { await porPagar(body); return lista($('#eg-lista', body), ctx, { estado: 'aprobado' }, 'pagar'); }
   const per = leerPeriodo(q);
   return lista(body, ctx, sub === 'aprobar' ? { estado: 'por_aprobar' } : { estado: q.get('estado') || '', desde: per.desde, hasta: per.hasta, per }, sub === 'aprobar');

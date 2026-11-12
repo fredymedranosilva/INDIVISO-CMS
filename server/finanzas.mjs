@@ -2,6 +2,7 @@
 // Todas las funciones que escriben deben ejecutarse dentro de tx() (ver db.mjs).
 import { fail, hoy, periodoDe, addMonths, addDays, diffDays, nombrePeriodo, prorratear, mask, fechaOperable } from './util.mjs';
 import { token, sha256 } from './security.mjs';
+import { tipoGastoPorDefecto } from './db.mjs';
 
 // ---------- Catálogo de cuentas base ----------
 export const CATALOGO = [
@@ -47,6 +48,7 @@ export function crearCondominio(db, data, user) {
   const cid = Number(r.lastInsertRowid);
   const ins = db.prepare('INSERT INTO cuentas (condominio_id, codigo, nombre, tipo, naturaleza, clave, presupuestable) VALUES (?,?,?,?,?,?,?)');
   for (const [codigo, nombre, tipo, nat, clave, pres] of CATALOGO) ins.run(cid, codigo, nombre, tipo, nat, clave, pres);
+  tipoGastoPorDefecto(db);
   return cid;
 }
 

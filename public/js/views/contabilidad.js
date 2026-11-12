@@ -116,20 +116,28 @@ async function balanza(el, ctx, q) {
   $('[data-f]', el).addEventListener('submit', e => { e.preventDefault(); const f = e.target; location.hash = `${ctx.base}/balanza?desde=${f.desde.value}&hasta=${f.hasta.value}`; });
 }
 
+export const TIPO_GASTO = { fijo: 'Fijo', variable: 'Variable' };
+export const selTipoGasto = k => puede('config')
+  ? html`<select class="sel-sm" data-change="tipoGasto" data-id="${k.id}" aria-label="Tipo de gasto de ${k.codigo}">${Object.entries(TIPO_GASTO).map(([v, l]) => html`<option value="${v}" ${v === (k.tipo_gasto || 'variable') ? raw('selected') : ''}>${l}</option>`)}</select>`
+  : html`<span class="pill ${k.tipo_gasto === 'fijo' ? 'info' : 'neutral'}">${TIPO_GASTO[k.tipo_gasto || 'variable']}</span>`;
+export const cambiarTipoGasto = async (d, elx) => { await capi(`/cuentas/${d.id}`, { method: 'PUT', body: { tipo_gasto: elx.value } }); toast(`Rubro marcado como gasto ${TIPO_GASTO[elx.value].toLowerCase()}.`); };
+
 function catalogo(el, ctx, cuentas) {
   const TIPOS = { activo: 'Activo', pasivo: 'Pasivo', patrimonio: 'Patrimonio', ingreso: 'Ingresos', egreso: 'Egresos' };
   mount(el, html`<div class="filters"><span class="spacer"></span>${puede('config') ? html`<button class="btn" data-action="nueva">Nueva cuenta</button>` : ''}</div>
     <section class="panel flush"><header><h2>Catálogo de cuentas</h2><span class="meta">Las cuentas con clave de sistema alimentan cobranza, fondos y bancos.</span></header>
-    <div class="table-wrap"><table class="tbl dense"><thead><tr><th>Código</th><th>Cuenta</th><th>Naturaleza</th><th>Uso</th></tr></thead><tbody>
-    ${Object.entries(TIPOS).map(([t, l]) => html`<tr class="grupo"><td colspan="4">${l}</td></tr>${cuentas.filter(k => k.tipo === t).map(k => html`<tr><td class="num">${k.codigo}</td><td>${k.nombre}</td><td>${k.naturaleza === 'D' ? 'Deudora' : 'Acreedora'}</td><td>${k.clave ? html`<span class="pill neutral">${k.clave}</span>` : k.presupuestable ? 'Partida presupuestal' : ''}</td></tr>`)}`)}
+    <div class="table-wrap"><table class="tbl dense"><thead><tr><th>Código</th><th>Cuenta</th><th>Naturaleza</th><th>Tipo de gasto</th><th>Uso</th></tr></thead><tbody>
+    ${Object.entries(TIPOS).map(([t, l]) => html`<tr class="grupo"><td colspan="5">${l}</td></tr>${cuentas.filter(k => k.tipo === t).map(k => html`<tr><td class="num">${k.codigo}</td><td>${k.nombre}</td><td>${k.naturaleza === 'D' ? 'Deudora' : 'Acreedora'}</td><td>${k.tipo === 'egreso' ? selTipoGasto(k) : ''}</td><td>${k.clave ? html`<span class="pill neutral">${k.clave}</span>` : k.presupuestable ? 'Partida presupuestal' : ''}</td></tr>`)}`)}
     </tbody></table></div></section>`);
   ctx.acciones({
     nueva: () => dialogo({
       titulo: 'Nueva cuenta contable', cuerpo: html`<div class="form-grid"><label class="field"><span>Código</span><input name="codigo" required placeholder="5504" maxlength="12"></label>
         <label class="field"><span>Tipo</span><select name="tipo">${Object.entries(TIPOS).map(([k, l]) => html`<option value="${k}" ${k === 'egreso' ? raw('selected') : ''}>${l}</option>`)}</select></label>
+        <label class="field"><span>Tipo de gasto (solo egresos)</span><select name="tipo_gasto"><option value="variable">Variable</option><option value="fijo">Fijo</option></select></label>
         <label class="field full"><span>Nombre</span><input name="nombre" required maxlength="120"></label></div>`,
       acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Crear cuenta', primary: true }],
-      onSubmit: async f => { await capi('/cuentas', { method: 'POST', body: { codigo: val(f, 'codigo'), nombre: val(f, 'nombre'), tipo: f.tipo.value } }); toast('Cuenta creada.'); ctx.recargar(); },
+      onSubmit: async f => { await capi('/cuentas', { method: 'POST', body: { codigo: val(f, 'codigo'), nombre: val(f, 'nombre'), tipo: f.tipo.value, tipo_gasto: f.tipo.value === 'egreso' ? f.tipo_gasto.value : undefined } }); toast('Cuenta creada.'); ctx.recargar(); },
     }),
+    tipoGasto: cambiarTipoGasto,
   });
 }

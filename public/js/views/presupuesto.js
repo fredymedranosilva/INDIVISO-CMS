@@ -1,6 +1,7 @@
 // Presupuesto anual versionado: captura por partida y mes, aprobación en asamblea, ejercido y cuota sugerida.
 import { capi, html, raw, mount, $, $$, pesos, puede, tabla, m, pill, toast, dialogo, val, cargando, barra, pct, centsToInput, parsePesos, hoy, confirmar, fechaHora } from '../ui.js';
 import { invalidar } from './comun.js';
+import { selTipoGasto, cambiarTipoGasto, TIPO_GASTO } from './contabilidad.js';
 import { abrirImportacion, descargarPlantilla } from './importar.js';
 
 const MES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
@@ -40,7 +41,7 @@ export async function render(el, ctx) {
           <div class="kpi"><p class="label">Ejercido</p><p class="kpi-value md">${pesos(vs.totales.ejercido)}</p><p class="sub">${pct(vs.totales.a_la_fecha ? vs.totales.ejercido / vs.totales.a_la_fecha : null)} de lo previsto a la fecha</p></div>
           <div class="kpi"><p class="label">Disponible en el año</p><p class="kpi-value md ${vs.totales.disponible < 0 ? 'neg-t' : ''}">${pesos(vs.totales.disponible)}</p></div></div>
         <div class="top-gap">${tabla([
-          { t: 'Partida', k: r => html`${r.nombre}<span class="sub-t">${r.codigo}</span>` },
+          { t: 'Código', k: r => html`<span class="num">${r.codigo}</span>` }, { t: 'Partida', k: r => html`${r.nombre}<span class="sub-t">Gasto ${TIPO_GASTO[r.tipo_gasto].toLowerCase()}</span>` },
           { t: 'A la fecha', num: true, k: r => m(r.a_la_fecha) }, { t: 'Ejercido', num: true, k: r => m(r.ejercido) },
           { t: 'Variación', num: true, k: r => html`<span class="num ${r.variacion < 0 ? 'neg-t' : ''}">${pesos(r.variacion, { signo: true })}</span>` },
           { t: 'Avance anual', k: r => html`<div class="hbar"><span></span><span class="num small">${pct(r.anual ? r.ejercido / r.anual : null, 0)}</span>${barra(r.anual ? r.ejercido / r.anual : 1, { cls: r.ejercido > r.anual ? 'neg' : r.ejercido > r.a_la_fecha ? 'warn' : '' })}</div>`, cls: 'hide-m' },
@@ -53,15 +54,16 @@ export async function render(el, ctx) {
 
     <section class="panel flush top-gap"><header><h2>Partidas por mes</h2><span class="meta">${editable ? 'Escriba los importes en pesos; al guardar se valida cada línea.' : 'Para modificar un presupuesto aprobado cree una nueva versión; la anterior se conserva.'}</span></header>
       <div class="table-wrap"><table class="tbl grid-pres dense">
-        <thead><tr><th>Partida</th>${MES.map(x => html`<th class="r">${x}</th>`)}<th class="r">Anual</th></tr></thead>
-        <tbody>${d.cuentas.map(k => html`<tr><td>${k.codigo} · ${k.nombre}</td>${MES.map((_, i) => { const v = val12.get(`${k.id}:${i + 1}`) || 0;
+        <thead><tr><th>Código</th><th>Partida</th><th>Tipo</th>${MES.map(x => html`<th class="r">${x}</th>`)}<th class="r">Anual</th></tr></thead>
+        <tbody>${d.cuentas.map(k => html`<tr><td class="num">${k.codigo}</td><td>${k.nombre}</td><td>${selTipoGasto(k)}</td>${MES.map((_, i) => { const v = val12.get(`${k.id}:${i + 1}`) || 0;
           return html`<td class="r num">${editable ? html`<input class="cell" data-c="${k.id}" data-m="${i + 1}" value="${v ? centsToInput(v) : ''}" inputmode="decimal" aria-label="${k.nombre} ${MES[i]}">` : html`<span class="${v ? '' : 'zero'}">${v ? pesos(v).replace('.00', '') : '0'}</span>`}</td>`; })}<td class="r num"><b>${pesos(totalCta(k))}</b></td></tr>`)}</tbody>
-        <tfoot><tr><td>Total</td>${MES.map((_, i) => html`<td class="r num">${pesos(totalMes(i)).replace('.00', '')}</td>`)}<td class="r num">${pesos(anual)}</td></tr></tfoot>
+        <tfoot><tr><td colspan="3">Total</td>${MES.map((_, i) => html`<td class="r num">${pesos(totalMes(i)).replace('.00', '')}</td>`)}<td class="r num">${pesos(anual)}</td></tr></tfoot>
       </table></div></section>`);
 
   ctx.acciones({
     version: async (_, elx) => { if (elx.tagName === 'SELECT') { location.hash = `${ctx.base}/${elx.value}`; return; } const r = await capi('/presupuestos', { method: 'POST', body: { ejercicio: p.ejercicio } }); toast('Borrador creado a partir de la versión aprobada.'); location.hash = `${ctx.base}/${r.id}`; },
     siguiente: () => nuevo(anio + 1, ctx),
+    tipoGasto: cambiarTipoGasto,
     exportar: () => descargarPlantilla('presupuesto', { valores: val12 }),
     importar: () => abrirImportacion('presupuesto', { opciones: { presupuesto_id: p.id }, extra: { valores: val12 }, onOk: () => ctx.recargar() }),
     guardar: async () => {

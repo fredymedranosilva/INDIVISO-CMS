@@ -117,8 +117,9 @@ async function liquidacion(el, ctx, q, def, c) {
   ctx.acciones({ excel: async () => {
     const { escribirXlsx, guardarBlob } = await import('../xlsx.js');
     const filas = [['Unidad', 'Propietario', 'Adeudo previo', ...l.periodos.map(p => `${mesCorto(p)} emitido`), ...l.periodos.map(p => `${mesCorto(p)} pagado`), 'Emitido', 'Pagado', 'Bonificado', 'Saldo'],
-      ...l.unidades.map(u => [u.clave, u.propietario || '', u.adeudo_previo / 100, ...l.periodos.map(p => (u.meses[p]?.emitido || 0) / 100), ...l.periodos.map(p => (u.meses[p]?.pagado || 0) / 100), u.emitido / 100, u.pagado / 100, u.bonificado / 100, u.saldo / 100])];
-    await guardarBlob(escribirXlsx([{ nombre: `Liquidación ${ej}`, filas }]), `liquidacion-anual-${ej}.xlsx`);
+      ...l.unidades.map(u => [u.clave, u.propietario || '', u.adeudo_previo / 100, ...l.periodos.map(p => (u.meses[p]?.emitido || 0) / 100), ...l.periodos.map(p => (u.meses[p]?.pagado || 0) / 100), u.emitido / 100, u.pagado / 100, u.bonificado / 100, u.saldo / 100]),
+      ['Total', '', l.totales.adeudo_previo / 100, ...l.periodos.map(p => l.totales.meses[p].emitido / 100), ...l.periodos.map(p => l.totales.meses[p].pagado / 100), l.totales.emitido / 100, l.totales.pagado / 100, l.totales.bonificado / 100, l.totales.saldo / 100]];
+    await guardarBlob(escribirXlsx([{ nombre: `Liquidación ${ej}`, filas, total: true, titulo: [`Liquidación anual de cuotas ${ej}`, `${c?.nombre || ''} · Ejercicio ${ej}`, `Generado el ${new Date().toLocaleString('es-MX')} · Indiviso CMS`] }]), `liquidacion-anual-${ej}.xlsx`);
   } });
   return html`<article class="doc wide-doc">${encabezado(c, `Liquidación anual ${ej}`, 'Emitido contra pagado por unidad')}${t}</article>`;
 }

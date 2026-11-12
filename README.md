@@ -14,6 +14,10 @@ node --test test/*.test.mjs   # pruebas de integridad
 ```
 Usuarios de prueba y contraseñas: `data/credenciales-demo.txt`.
 
+## Hostinger
+
+Ver [LEEME-HOSTINGER.md](LEEME-HOSTINGER.md). El paquete se genera con `npm run hostinger`.
+
 ## Producción
 - `HOST=127.0.0.1 PORT=4300 INDIVISO_HTTPS=1 INDIVISO_TRUST_PROXY=1 node server/index.mjs`, detrás de Caddy/Nginx con HTTPS.
 - `INDIVISO_BACKUP_KEY` (32 bytes en base64) o el archivo `data/respaldo.key`: **guárdela fuera del servidor**; sin ella los respaldos no se descifran.
@@ -34,7 +38,9 @@ Pagos, egresos, proveedores, directorio (unidades y residentes), saldos iniciale
 - **Fondos** (Configuración y *Reportes → Fondos*): además del fondo de reserva, fondos para proyectos que reciben cuotas extraordinarias y pagan sus egresos con aprobación.
 - **Cuentas por pagar** (*Egresos*): saldo con proveedores por antigüedad (0-30, 31-60, 61-90, +90 días).
 - **Liquidación anual** (*Reportes*): cada unidad, mes por mes, emitido contra pagado; exportable a Excel.
-- **Comunidad**: avisos, calendario, documentos, encuestas (un voto por unidad, opcionalmente ponderado por indiviso), teléfonos útiles y cosas perdidas; los residentes lo ven en su portal.
+- **Códigos**: cada departamento tiene un código único (clave) y cada rubro del presupuesto un código único con su tipo de gasto **Fijo** o **Variable**. Las importaciones identifican por código, nunca por nombre.
+- **Importar cuotas** (Unidades o Cobranza): código del departamento + cuota mensual.
+- **Liquidación anual de egresos** (Egresos): gasto real contra presupuesto por rubro y mes, con subtotales fijo/variable, en PDF y Excel.
 
 ## Reportes en PDF y periodos
 - Todo se consulta por **mes y año** (o «Todo el año»): ingresos, egresos, pagos, bancos, cuentas por cobrar, morosidad y estados financieros.

@@ -128,61 +128,85 @@ function zip(archivos) {
 const X = s => String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const letra = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
 
-// hojas: [{ nombre, filas: [[...]], anchos?, ejemplos?: [índices], titulo?: [líneas], moneda?: [columnas], total?: bool, pct?: [columnas] }]
-// La primera fila de `filas` es el encabezado (azul marino, con filtro y fijo). Las columnas de importes llevan formato
-// de moneda; se detectan por su encabezado o se indican en `moneda`. `total` resalta la última fila. `titulo` agrega
-// arriba el nombre del reporte, el condominio y el periodo.
-const MONEDA_RE = /importe|monto|total|saldo|cuota|pagad|emitid|cobrad|adeudo|vencid|cargo|abono|ingreso|egreso|presupuesto|ejercido|disponible|subtotal|iva|recargo|favor|anterior|final|aportaci|aplicaci|por vencer|^\d|d[ií]as?$|^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)/i;
+// hojas: [{ nombre, filas: [[...]], anchos?, ejemplos?: [índices], titulo?: [líneas], moneda?: [columnas], total?: bool, pct?: [columnas], subtotales?: [índices] }]
+// Diseño CMS: banda de título en verde CMS con el condominio y el periodo en dorado, encabezados en verde 2 con filete
+// dorado, renglones alternos en marfil, subtotales en verde claro y fila de total en verde CMS. Las columnas de importes
+// llevan formato de moneda (se detectan por su encabezado o se indican en `moneda`). Las filas cuyo texto empieza con
+// «Subtotal» se resaltan solas. La información no cambia: solo la presentación.
+const MONEDA_RE = /importe|monto|total|saldo|cuota|pagad|emitid|cobrad|adeudo|vencid|cargo|abono|ingreso|egreso|presupuesto|ejercido|disponible|subtotal|iva|recargo|favor|anterior|final|aportaci|aplicaci|por vencer|variaci|real|acumulad|^\d|d[ií]as?$|^(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)/i;
+// Índices de estilo (ver styles.xml más abajo)
+const S = { enc: 1, ej: 2, txt: 3, txtZ: 4, mon: 5, monZ: 6, pct: 7, pctZ: 8, subT: 9, subM: 10, subP: 11, totT: 12, totM: 13, totP: 14, tit: 15, sub: 16, meta: 17, ejM: 18, num: 19, numZ: 20 };
 export function escribirXlsx(hojas) {
   const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
   const hojaXml = h => {
     const tit = h.titulo || [], off = tit.length ? tit.length + 1 : 0, enc = h.filas[0] || [];
-    const money = new Set(h.moneda || (h.titulo ? enc.map((t, j) => MONEDA_RE.test(String(t)) && !/d[ií]as|cuotas vencidas|^n[uú]m|unidades|pagos$|documentos/i.test(String(t)) ? j : -1).filter(j => j >= 0) : []));
+    const ncol = Math.max(1, enc.length);
+    const money = new Set(h.moneda || (h.titulo ? enc.map((t, j) => MONEDA_RE.test(String(t)) && !/d[ií]as|cuotas vencidas|^n[uú]m|unidades|pagos$|documentos|movimientos|%/i.test(String(t)) ? j : -1).filter(j => j >= 0) : []));
     const pct = new Set(h.pct || []);
-    const anchos = h.anchos || enc.map((_, j) => Math.min(52, Math.max(money.has(j) ? 14 : 10, ...h.filas.slice(0, 300).map(f => String(f[j] ?? '').length + 2))));
+    const anchos = h.anchos || enc.map((_, j) => Math.min(52, Math.max(money.has(j) ? 15 : 10, ...h.filas.slice(0, 300).map(f => String(f[j] ?? '').length + 3))));
     const ult = h.filas.length - 1;
+    const subt = new Set(h.subtotales || h.filas.map((f, i) => i > 0 && f.slice(0, 3).some(c => typeof c === 'string' && /^subtotal\b/i.test(c)) ? i : -1).filter(i => i > 0));
     const celda = (v, r, st) => {
       if (v == null || v === '') return st ? `<c r="${r}" s="${st}"/>` : '';
       const s2 = st ? ` s="${st}"` : '';
       return typeof v === 'number' && Number.isFinite(v) ? `<c r="${r}"${s2}><v>${v}</v></c>` : `<c r="${r}" t="inlineStr"${s2}><is><t xml:space="preserve">${X(v)}</t></is></c>`;
     };
-    const filasT = tit.map((t, i) => `<row r="${i + 1}">${celda(t, `A${i + 1}`, i === 0 ? 6 : 7)}</row>`).join('');
+    // Banda de título: cada línea ocupa todo el ancho de la tabla (celdas combinadas).
+    const estT = [S.tit, S.sub, S.meta];
+    const filasT = tit.map((t, i) => { const st = estT[Math.min(i, 2)];
+      return `<row r="${i + 1}" ht="${i === 0 ? 30 : i === 1 ? 20 : 17}" customHeight="1">${Array.from({ length: ncol }, (_, j) => celda(j ? '' : t, `${letra(j)}${i + 1}`, st)).join('')}</row>`; }).join('');
     const filas = h.filas.map((f, i) => {
-      const n = i + 1 + off, esTotal = h.total && i === ult && i > 0;
-      return `<row r="${n}">${(i === 0 ? enc : f).map((v, j) => {
-        let st = 0;
-        if (i === 0) st = 1;
-        else if (h.ejemplos?.includes(i)) st = 2;
-        else if (typeof v === 'number') st = pct.has(j) ? (esTotal ? 9 : 8) : money.has(j) ? (esTotal ? 5 : 3) : (esTotal ? 4 : 0);
-        else if (esTotal) st = 4;
+      const n = i + 1 + off, esTotal = h.total && i === ult && i > 0, esSub = subt.has(i), z = !esTotal && !esSub && i % 2 === 0;
+      return `<row r="${n}"${i === 0 ? ' ht="24" customHeight="1"' : ''}>${(i === 0 ? enc : Array.from({ length: Math.max(f.length, ncol) }, (_, j) => f[j])).map((v, j) => {
+        let st;
+        if (i === 0) st = S.enc;
+        else if (h.ejemplos?.includes(i)) st = typeof v === 'number' && money.has(j) ? S.ejM : S.ej;
+        else if (esTotal) st = typeof v === 'number' ? (pct.has(j) ? S.totP : money.has(j) ? S.totM : S.totT) : S.totT;
+        else if (esSub) st = typeof v === 'number' ? (pct.has(j) ? S.subP : money.has(j) ? S.subM : S.subT) : S.subT;
+        else if (typeof v === 'number') st = pct.has(j) ? (z ? S.pctZ : S.pct) : money.has(j) ? (z ? S.monZ : S.mon) : (z ? S.numZ : S.num);
+        else st = z ? S.txtZ : S.txt;
         return celda(v, `${letra(j)}${n}`, st);
       }).join('')}</row>`;
     }).join('');
     const ref = enc.length ? `A${off + 1}:${letra(enc.length - 1)}${off + h.filas.length}` : null;
-    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}"><sheetViews><sheetView workbookViewId="0" showGridLines="${h.titulo ? 0 : 1}"><pane ySplit="${off + 1}" topLeftCell="A${off + 2}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
-      + `<cols>${anchos.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${filasT}${off ? `<row r="${off}"/>` : ''}${filas}</sheetData>`
-      + `${ref && h.filas.length > 1 && !h.ejemplos ? `<autoFilter ref="${ref}"/>` : ''}<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup orientation="${enc.length > 7 ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+    const merges = ncol > 1 ? tit.map((_, i) => `<mergeCell ref="A${i + 1}:${letra(ncol - 1)}${i + 1}"/>`) : [];
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${NS}"><sheetPr><tabColor rgb="FF003329"/><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0" showGridLines="0" zoomScale="100"><pane ySplit="${off + 1}" topLeftCell="A${off + 2}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
+      + `<sheetFormatPr defaultRowHeight="16"/><cols>${anchos.map((w, j) => `<col min="${j + 1}" max="${j + 1}" width="${w}" customWidth="1"/>`).join('')}</cols><sheetData>${filasT}${off ? `<row r="${off}" ht="8" customHeight="1"/>` : ''}${filas}</sheetData>`
+      + `${ref && h.filas.length > 1 && !h.ejemplos ? `<autoFilter ref="${ref}"/>` : ''}${merges.length ? `<mergeCells count="${merges.length}">${merges.join('')}</mergeCells>` : ''}`
+      + `<printOptions horizontalCentered="1"/><pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/><pageSetup orientation="${enc.length > 7 ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/>`
+      + `<headerFooter><oddFooter>&amp;L&amp;8&amp;K6B7280${X(tit[1] || h.nombre)}&amp;R&amp;8&amp;K6B7280Página &amp;P de &amp;N</oddFooter></headerFooter></worksheet>`;
   };
   const archivos = [
     ['[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${hojas.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`],
     ['_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
     ['xl/workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${hojas.map((h, i) => `<sheet name="${X(h.nombre.slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`],
     ['xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${hojas.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${hojas.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
-    ['xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS}"><numFmts count="2"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00;[Red]-&quot;$&quot;#,##0.00"/><numFmt numFmtId="165" formatCode="0.0%"/></numFmts>`
-      + `<fonts count="6"><font><sz val="10.5"/><name val="Calibri"/></font><font><b/><sz val="10.5"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><i/><sz val="10.5"/><color rgb="FF7A5A00"/><name val="Calibri"/></font><font><b/><sz val="10.5"/><name val="Calibri"/></font><font><b/><sz val="15"/><color rgb="FF0F1B2D"/><name val="Calibri"/></font><font><sz val="10.5"/><color rgb="FF4F5D73"/><name val="Calibri"/></font></fonts>`
-      + `<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF4CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0F1B2D"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F3F1"/><bgColor indexed="64"/></patternFill></fill></fills>`
-      + `<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top style="thin"><color rgb="FF0F766E"/></top><bottom style="double"><color rgb="FF0F766E"/></bottom><diagonal/></border></borders>`
-      + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="10">`
+    ['xl/styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${NS}"><numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00;[Red]-&quot;$&quot;#,##0.00"/><numFmt numFmtId="165" formatCode="0.0%"/><numFmt numFmtId="166" formatCode="&quot;$&quot;#,##0.00;-&quot;$&quot;#,##0.00"/></numFmts>`
+      + `<fonts count="7"><font><sz val="10.5"/><color rgb="FF1F2937"/><name val="Calibri"/></font><font><b/><sz val="10.5"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><i/><sz val="10.5"/><color rgb="FF8A5A1F"/><name val="Calibri"/></font><font><b/><sz val="10.5"/><color rgb="FF001F19"/><name val="Calibri"/></font><font><b/><sz val="16"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFE6A24D"/><name val="Calibri"/></font><font><i/><sz val="9"/><color rgb="FF6B7280"/><name val="Calibri"/></font></fonts>`
+      + `<fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFBEFD9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF001F19"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF003329"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFBF9F4"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE5EDE9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF6F3EC"/><bgColor indexed="64"/></patternFill></fill></fills>`
+      + `<borders count="6"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FFE3DCCB"/></bottom><diagonal/></border><border><left/><right/><top/><bottom style="medium"><color rgb="FFE6A24D"/></bottom><diagonal/></border><border><left/><right/><top style="medium"><color rgb="FFE6A24D"/></top><bottom/><diagonal/></border><border><left/><right/><top style="thin"><color rgb="FF003329"/></top><bottom style="thin"><color rgb="FFE3DCCB"/></bottom><diagonal/></border><border><left/><right/><top/><bottom style="medium"><color rgb="FFC58430"/></bottom><diagonal/></border></borders>`
+      + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="21">`
       + `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`
-      + `<xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>`
-      + `<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>`
-      + `<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`
-      + `<xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>`
-      + `<xf numFmtId="164" fontId="3" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>`
-      + `<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>`
-      + `<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1"/>`
-      + `<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>`
-      + `<xf numFmtId="165" fontId="3" fillId="4" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>`
+      + `<xf numFmtId="0" fontId="1" fillId="4" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>`
+      + `<xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="164" fontId="0" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="165" fontId="0" fillId="5" borderId="1" xfId="0" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="3" fillId="6" borderId="4" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="164" fontId="3" fillId="6" borderId="4" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="165" fontId="3" fillId="6" borderId="4" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="1" fillId="3" borderId="3" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="166" fontId="1" fillId="3" borderId="3" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="165" fontId="1" fillId="3" borderId="3" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="4" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" indent="1"/></xf>`
+      + `<xf numFmtId="0" fontId="5" fillId="4" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" indent="1"/></xf>`
+      + `<xf numFmtId="0" fontId="6" fillId="7" borderId="5" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" indent="1"/></xf>`
+      + `<xf numFmtId="164" fontId="2" fillId="2" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
+      + `<xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>`
       + `</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`],
     ...hojas.map((h, i) => [`xl/worksheets/sheet${i + 1}.xml`, hojaXml(h)]),
   ];

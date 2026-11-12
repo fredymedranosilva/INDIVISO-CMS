@@ -11,7 +11,10 @@ import { AppError, dbError } from './util.mjs';
 import { authRoutes, loadSession, checkCsrf, checkOrigin, limpiarSesiones } from './auth.mjs';
 import { apiRoutes, resolverCondominio } from './api.mjs';
 import { programarRespaldos } from './backup.mjs';
-import { rateLimit, audit } from './security.mjs';
+import { rateLimit, audit, hashPassword, passwordProblem, token } from './security.mjs';
+import { writeFileSync } from 'node:fs';
+import { DATA_DIR } from './db.mjs';
+import { TEMPORAL_MS } from './auth.mjs';
 
 const PORT = +(process.env.PORT || 4300);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -25,6 +28,27 @@ const RATE = process.env.INDIVISO_RATE === undefined ? 1200 : +process.env.INDIV
 const PUBLIC = join(import.meta.dirname, '..', 'public');
 
 const db = openDb();
+
+// Primer arranque en un servidor nuevo: crea el superadministrador. Con INDIVISO_ADMIN_EMAIL e INDIVISO_ADMIN_PASSWORD
+// usa esos datos; sin contraseña genera una temporal (7 días, se cambia al entrar) y la deja en DATA_DIR/primer-acceso.txt.
+function primerArranque() {
+  if (db.prepare('SELECT 1 FROM usuarios LIMIT 1').get()) return;
+  const email = (process.env.INDIVISO_ADMIN_EMAIL || '').trim().toLowerCase();
+  if (!email) return;
+  let pass = process.env.INDIVISO_ADMIN_PASSWORD || '', temporal = false;
+  if (pass && passwordProblem(pass, email)) { console.error(`INDIVISO_ADMIN_PASSWORD no es válida: ${passwordProblem(pass, email)} Se generará una temporal.`); pass = ''; }
+  if (!pass) { pass = `${token(9)}-Aa1`; temporal = true; }
+  const now = Date.now();
+  const id = Number(db.prepare('INSERT INTO usuarios (email, nombre, pass_hash, superadmin, debe_cambiar_pass, pass_temporal_hasta, created_at, pass_cambiado_at) VALUES (?,?,?,1,?,?,?,?)')
+    .run(email, process.env.INDIVISO_ADMIN_NOMBRE || 'Superadministrador', hashPassword(pass), temporal ? 1 : 0, temporal ? now + TEMPORAL_MS : null, now, now).lastInsertRowid);
+  audit(db, { usuario_id: id, accion: 'instalacion' });
+  if (temporal) {
+    const f = join(DATA_DIR, 'primer-acceso.txt');
+    writeFileSync(f, `Indiviso CMS · primer acceso\n\nCorreo: ${email}\nContraseña temporal (válida 7 días, se cambia al entrar): ${pass}\n\nBorre este archivo después de entrar.\n`, { mode: 0o600 });
+    console.log(`Superadministrador creado: ${email}. Contraseña temporal en ${f}`);
+  } else console.log(`Superadministrador creado: ${email}. Quite INDIVISO_ADMIN_PASSWORD de las variables de entorno.`);
+}
+primerArranque();
 
 const routes = [...authRoutes, ...apiRoutes].map(([method, path, opts, handler]) => {
   const keys = [];
@@ -200,7 +224,7 @@ server.listen(PORT, HOST, () => {
   console.log(`Indiviso CMS escuchando en http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   if (!LOCAL && !HOSTS.length) console.warn('AVISO: el servidor acepta conexiones de la red sin lista de hosts. Defina INDIVISO_HOSTS=su.dominio.com');
   if (!LOCAL && !SECURE) console.warn('AVISO: expuesto en red sin HTTPS. Póngalo detrás de un proxy TLS y defina INDIVISO_HTTPS=1.');
-  if (!db.prepare('SELECT 1 FROM usuarios LIMIT 1').get()) console.log('Base vacía: ejecute «node server/seed.mjs» (demo) o «node server/seed.mjs --vacio» (solo superadministrador).');
+  if (!db.prepare('SELECT 1 FROM usuarios LIMIT 1').get()) console.log('Base vacía: defina INDIVISO_ADMIN_EMAIL (y opcionalmente INDIVISO_ADMIN_PASSWORD) y reinicie.');
 });
 programarRespaldos(db);
 limpiarSesiones(db);

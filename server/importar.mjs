@@ -102,7 +102,7 @@ function buscador(items, claves) {
 function catalogos(db, cid) {
   const unidades = db.prepare('SELECT id, clave, torre, referencia, activo FROM unidades WHERE condominio_id = ?').all(cid);
   const bancos = db.prepare('SELECT b.id, b.nombre, b.banco, b.numero_mask, b.fondo, k.codigo FROM cuentas_banco b JOIN cuentas k ON k.id = b.cuenta_id WHERE b.condominio_id = ? AND b.activo = 1').all(cid);
-  const partidas = db.prepare("SELECT id, codigo, nombre FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(cid);
+  const partidas = db.prepare("SELECT id, codigo, nombre, tipo_gasto FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(cid);
   const proveedores = db.prepare('SELECT id, nombre, rfc FROM proveedores WHERE condominio_id = ?').all(cid);
   return { unidades, bancos, partidas, proveedores };
 }
@@ -149,7 +149,7 @@ function buscarPartida(aux, q, ctx) {
   const usados = new Set(ctx.db.prepare('SELECT codigo FROM cuentas WHERE condominio_id = ?').all(ctx.cid).map(r => r.codigo));
   let n = 5600; while (usados.has(String(n)) && n < 5999) n++;
   if (n >= 5999) fail(400, 'No hay códigos libres para crear la partida.');
-  const id = Number(ctx.db.prepare("INSERT INTO cuentas (condominio_id, codigo, nombre, tipo, naturaleza, presupuestable) VALUES (?,?,?,'egreso','D',1)").run(ctx.cid, String(n), nombre).lastInsertRowid);
+  const id = Number(ctx.db.prepare("INSERT INTO cuentas (condominio_id, codigo, nombre, tipo, naturaleza, presupuestable, tipo_gasto) VALUES (?,?,?,'egreso','D',1,'variable')").run(ctx.cid, String(n), nombre).lastInsertRowid);
   const nueva = { id, codigo: String(n), nombre, nueva: true };
   aux.partidas.push(nueva); aux.partida = buscador(aux.partidas, p => [p.codigo, p.nombre]);
   aux.creadas.push(`${n} · ${nombre}`);
@@ -415,10 +415,38 @@ const TIPOS = {
     },
   },
 
+  // Cuotas ordinarias por departamento: se identifica SOLO por su código único (clave o referencia exacta).
+  cuotas: {
+    perm: 'config', nombre: 'cuotas',
+    columnas: {
+      unidad: ['codigo', 'codigo de unidad', 'codigo unidad', 'clave', 'unidad', 'departamento', 'depto', 'vivienda'],
+      cuota: ['cuota', 'cuota mensual', 'cuota ordinaria', 'mantenimiento', 'importe', 'monto'],
+      concepto: ['comentarios', 'notas', 'concepto'],
+    },
+    req: ['unidad', 'cuota'],
+    vacia: r => !txt(r.cuota),
+    prep(ctx, aux) { aux.vistas = new Set(); },
+    fila(ctx, r, aux) {
+      const q = txt(r.unidad) || fail(400, 'Falta el código de la unidad.');
+      const u = aux.unidad(q);
+      if (u === 'AMBIGUO') fail(400, `El código «${q}» coincide con varias unidades.`);
+      if (!u) fail(400, `No existe una unidad con el código «${q}».`);
+      if (aux.vistas.has(u.id)) fail(400, `La unidad ${u.clave} aparece dos veces en el archivo.`);
+      aux.vistas.add(u.id);
+      const cuota = importe(r.cuota, { campo: 'Cuota' });
+      if (cuota == null) fail(400, 'Indique la cuota mensual.');
+      const antes = ctx.db.prepare('SELECT cuota_cents FROM unidades WHERE id = ?').get(u.id).cuota_cents;
+      if (antes === cuota) return { accion: 'omitido', detalle: `${u.clave} · sin cambio (${pesosTxt(cuota)})` };
+      ctx.db.prepare('UPDATE unidades SET cuota_cents = ? WHERE id = ? AND condominio_id = ?').run(cuota, u.id, ctx.cid);
+      return { accion: 'actualizado', detalle: `${u.clave} · ${pesosTxt(antes)} → ${pesosTxt(cuota)}`, monto: cuota };
+    },
+  },
+
   presupuesto: {
     perm: 'capturar', nombre: 'presupuesto',
     columnas: {
-      partida: ['partida', 'cuenta', 'clasificacion presupuestal', 'concepto', 'codigo', 'rubro', 'clasificacion'],
+      partida: ['codigo', 'partida', 'cuenta', 'clasificacion presupuestal', 'concepto', 'rubro', 'clasificacion'],
+      tipo_gasto: ['tipo', 'tipo de gasto', 'fijo variable', 'fijo o variable'],
       anual: ['anual', 'total', 'total anual', 'importe anual', 'presupuesto anual'],
       mensual: ['mensual', 'importe mensual', 'monto mensual'],
       ...Object.fromEntries(MESES.map((n, i) => [`m${i + 1}`, [...n, String(i + 1), `mes ${i + 1}`]])),
@@ -438,6 +466,9 @@ const TIPOS = {
       else if (txt(r.mensual)) montos = Array(12).fill(importe(r.mensual, { campo: 'Mensual' }));
       else if (txt(r.anual)) montos = prorratear(importe(r.anual, { campo: 'Anual' }), Array(12).fill(1));
       else fail(400, 'Indique los importes por mes, mensual o anual.');
+      const tg = norm(r.tipo_gasto);
+      if (tg && !/^(f|fijo|v|variable)$/.test(tg)) fail(400, 'Tipo de gasto: escriba Fijo o Variable.');
+      if (tg) ctx.db.prepare('UPDATE cuentas SET tipo_gasto = ? WHERE id = ?').run(tg[0] === 'f' ? 'fijo' : 'variable', k.id);
       F.guardarLineasPresupuesto(ctx.db, ctx.cid, aux.presupuestoId, montos.map((m, i) => ({ cuenta_id: k.id, mes: i + 1, monto_cents: m })));
       aux.vistas.add(k.id);
       const total = montos.reduce((a, b) => a + b, 0);

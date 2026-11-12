@@ -231,7 +231,7 @@ export function presupuestoVsReal(db, cid, ejercicio, presId = null) {
   const real = db.prepare(`SELECT m.cuenta_id, CAST(substr(p.periodo, 6, 2) AS INTEGER) AS mes, SUM(m.debe_cents - m.haber_cents) AS v
     FROM movimientos m JOIN polizas p ON p.id = m.poliza_id JOIN cuentas k ON k.id = m.cuenta_id
     WHERE p.condominio_id = ? AND p.periodo BETWEEN ? AND ? AND p.origen NOT IN ('cierre_ejercicio','reapertura_ejercicio') AND k.tipo = 'egreso' GROUP BY m.cuenta_id, mes`).all(cid, `${ejercicio}-01`, `${ejercicio}-12`);
-  const cuentas = db.prepare("SELECT id, codigo, nombre FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(cid);
+  const cuentas = db.prepare("SELECT id, codigo, nombre, COALESCE(tipo_gasto, 'variable') AS tipo_gasto FROM cuentas WHERE condominio_id = ? AND tipo = 'egreso' AND activo = 1 ORDER BY codigo").all(cid);
   const mesActual = periodoDe(hoy()).startsWith(String(ejercicio)) ? +hoy().slice(5, 7) : (ejercicio < +hoy().slice(0, 4) ? 12 : 0);
   const rows = cuentas.map(k => {
     const p = Array(12).fill(0), r = Array(12).fill(0);
@@ -243,6 +243,19 @@ export function presupuestoVsReal(db, cid, ejercicio, presId = null) {
   }).filter(r => r.anual || r.ejercido);
   const s = k => rows.reduce((a, r) => a + r[k], 0);
   return { presupuesto: pres || null, mes_actual: mesActual, rows, totales: { anual: s('anual'), ejercido: s('ejercido'), a_la_fecha: s('a_la_fecha'), disponible: s('disponible') } };
+}
+
+// Liquidación anual de egresos: gasto real contra presupuesto por rubro y mes, agrupado en gasto fijo y variable.
+export function liquidacionEgresos(db, cid, ejercicio) {
+  const v = presupuestoVsReal(db, cid, ejercicio);
+  const suma = (rs, k) => Array.from({ length: 12 }, (_, i) => rs.reduce((a, r) => a + r[k][i], 0));
+  const resumen = rs => {
+    const presupuesto = suma(rs, 'presupuesto'), real = suma(rs, 'real');
+    const anual = presupuesto.reduce((a, b) => a + b, 0), ejercido = real.reduce((a, b) => a + b, 0);
+    return { presupuesto, real, anual, ejercido, variacion: anual - ejercido, a_la_fecha: rs.reduce((a, r) => a + r.a_la_fecha, 0) };
+  };
+  const grupos = ['fijo', 'variable'].map(t => { const rows = v.rows.filter(r => r.tipo_gasto === t); return { tipo: t, nombre: t === 'fijo' ? 'Gasto fijo' : 'Gasto variable', rows, ...resumen(rows) }; });
+  return { ejercicio, presupuesto: v.presupuesto, mes_actual: v.mes_actual, cerrado: v.mes_actual === 12, grupos, totales: resumen(v.rows) };
 }
 
 export function flujoEfectivo(db, cid, desdeP, hastaP) {
