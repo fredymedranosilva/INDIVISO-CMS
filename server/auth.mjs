@@ -54,7 +54,9 @@ export function checkCsrf(ctx) {
 export function checkOrigin(ctx) {
   const origin = ctx.req.headers.origin;
   if (!origin) return;
-  try { if (new URL(origin).host !== ctx.req.headers.host) fail(403, 'Origen no permitido.', 'ORIGEN'); }
+  // Detrás del proxy del hospedaje el Host puede llegar reescrito: se acepta también X-Forwarded-Host.
+  const hosts = [ctx.req.headers.host, process.env.INDIVISO_TRUST_PROXY === '1' ? String(ctx.req.headers['x-forwarded-host'] || '').split(',')[0].trim() : ''].filter(Boolean);
+  try { if (!hosts.includes(new URL(origin).host)) fail(403, 'Origen no permitido.', 'ORIGEN'); }
   catch (e) { if (e.status) throw e; fail(403, 'Origen no permitido.', 'ORIGEN'); }
 }
 

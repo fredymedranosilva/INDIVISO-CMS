@@ -1,9 +1,13 @@
 #!/bin/sh
-# Genera indiviso-cms-hostinger.zip: solo lo necesario para producción, sin datos, demo ni pruebas.
+# Genera indiviso-cms-hostinger.zip con lo indispensable: app.js, package.json, server/ y public/. Sin datos, demo ni pruebas.
 set -e
 cd "$(dirname "$0")/.."
-SALIDA="${1:-indiviso-cms-hostinger.zip}"
+SALIDA="$(pwd)/${1:-indiviso-cms-hostinger.zip}"
+TMP="$(mktemp -d)"
+cp scripts/hostinger/app.js scripts/hostinger/package.json "$TMP/"
+mkdir -p "$TMP/server" && cp server/*.mjs "$TMP/server/" && rm -f "$TMP/server/seed.mjs"
+cp -R public "$TMP/public"
 rm -f "$SALIDA"
-zip -qr "$SALIDA" server.js package.json LEEME-HOSTINGER.md README.md public server scripts/restaurar.mjs \
-  -x "server/seed.mjs" "*.DS_Store"
+(cd "$TMP" && zip -qrX "$SALIDA" app.js package.json server public -x "*.DS_Store")
+rm -rf "$TMP"
 echo "Paquete listo: $SALIDA"

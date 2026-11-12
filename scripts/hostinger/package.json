@@ -1,0 +1,8 @@
+{
+  "name": "indiviso-cms",
+  "version": "2.0.0",
+  "private": true,
+  "main": "app.js",
+  "scripts": { "start": "node app.js" },
+  "engines": { "node": ">=22.5" }
+}

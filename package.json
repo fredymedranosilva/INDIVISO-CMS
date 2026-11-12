@@ -8,14 +8,12 @@
     "node": ">=22.5"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node server/index.mjs",
     "demo": "node server/seed.mjs",
     "vacio": "node server/seed.mjs --vacio",
     "test": "node --test test/*.test.mjs",
     "demo:estatica": "node scripts/build-demo.mjs",
-    "local": "node server/index.mjs",
     "hostinger": "sh scripts/paquete-hostinger.sh"
   },
-  "license": "UNLICENSED",
-  "main": "server.js"
+  "license": "UNLICENSED"
 }

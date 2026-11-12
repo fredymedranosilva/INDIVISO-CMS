@@ -33,8 +33,7 @@ const db = openDb();
 // usa esos datos; sin contraseña genera una temporal (7 días, se cambia al entrar) y la deja en DATA_DIR/primer-acceso.txt.
 function primerArranque() {
   if (db.prepare('SELECT 1 FROM usuarios LIMIT 1').get()) return;
-  const email = (process.env.INDIVISO_ADMIN_EMAIL || '').trim().toLowerCase();
-  if (!email) return;
+  const email = (process.env.INDIVISO_ADMIN_EMAIL || 'admin@indiviso.local').trim().toLowerCase();
   let pass = process.env.INDIVISO_ADMIN_PASSWORD || '', temporal = false;
   if (pass && passwordProblem(pass, email)) { console.error(`INDIVISO_ADMIN_PASSWORD no es válida: ${passwordProblem(pass, email)} Se generará una temporal.`); pass = ''; }
   if (!pass) { pass = `${token(9)}-Aa1`; temporal = true; }
@@ -45,7 +44,7 @@ function primerArranque() {
   if (temporal) {
     const f = join(DATA_DIR, 'primer-acceso.txt');
     writeFileSync(f, `Indiviso CMS · primer acceso\n\nCorreo: ${email}\nContraseña temporal (válida 7 días, se cambia al entrar): ${pass}\n\nBorre este archivo después de entrar.\n`, { mode: 0o600 });
-    console.log(`Superadministrador creado: ${email}. Contraseña temporal en ${f}`);
+    console.log(`Superadministrador creado: ${email} · contraseña temporal: ${pass} (también en ${f}). Cámbiela al entrar.`);
   } else console.log(`Superadministrador creado: ${email}. Quite INDIVISO_ADMIN_PASSWORD de las variables de entorno.`);
 }
 primerArranque();
@@ -83,7 +82,10 @@ function hostPermitido(req) {
   const h = String(req.headers.host || '').toLowerCase();
   if (!h || h.length > 255) return false;
   const nombre = h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0];
-  if (HOSTS.length) return HOSTS.includes(h) || HOSTS.includes(nombre);
+  if (HOSTS.length) {
+    const fwd = TRUST_PROXY ? String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase() : '';
+    return [h, nombre, fwd, fwd.split(':')[0]].some(x => x && HOSTS.includes(x));
+  }
   if (LOCAL) return ['localhost', '127.0.0.1', '[::1]'].includes(nombre);
   return true; // expuesto en red sin INDIVISO_HOSTS: se acepta y se advierte al arrancar
 }
@@ -124,7 +126,7 @@ async function api(req, res, url) {
   if (sitio === 'cross-site' || (sitio === 'same-site' && req.method !== 'GET')) return send(res, 403, { error: 'Origen no permitido.', code: 'ORIGEN' });
   const route = routes.find(r => r.method === req.method && r.re.test(url.pathname));
   if (!route) return send(res, 404, { error: 'Recurso no encontrado' });
-  const ctx = { req, res, db, ip, secure: SECURE, query: url.searchParams, params: {}, body: {} };
+  const ctx = { req, res, db, ip, secure: SECURE || (TRUST_PROXY && /^https/i.test(String(req.headers['x-forwarded-proto'] || ''))), query: url.searchParams, params: {}, body: {} };
   try {
     const m = url.pathname.match(route.re);
     route.keys.forEach((k, i) => { ctx.params[k] = decodificar(m[i + 1]); });
