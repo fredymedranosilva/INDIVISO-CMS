@@ -36,18 +36,24 @@ function detalle(grupos, conceptoFn = x => x.concepto, totalTexto = 'Total') {
     <tfoot><tr><td>${totalTexto}</td><td class="r num">${pesos(vis.reduce((a, g) => a + g.total, 0))}</td></tr></tfoot></table></div>`;
 }
 
-async function excel(nombre, hojas) {
+// Excel con formato: título del reporte, condominio y periodo arriba; moneda, filtros y fila de totales.
+async function excel(nombre, titulo, periodo, hojas) {
   const { escribirXlsx, guardarBlob } = await import('../xlsx.js');
-  await guardarBlob(escribirXlsx(hojas), nombre);
+  const condo = S.condos.find(x => x.id === S.cid)?.nombre || '';
+  const enc = [titulo, `${condo} · ${periodo}`, `Generado el ${new Date().toLocaleString('es-MX')} · Indiviso CMS`];
+  await guardarBlob(escribirXlsx(hojas.map(h => ({ total: true, ...h, titulo: [`${titulo} · ${h.nombre}`, ...enc.slice(1)] }))), nombre);
 }
+const P = c => (c || 0) / 100;
 const hojaMeses = (titulo, ms, nombreDe) => {
   const claves = [...new Set(ms.flatMap(x => Object.keys(x.clasificaciones || {})))].sort();
   return { nombre: titulo, filas: [['Clasificación', ...ms.map(x => MESES_L[+x.periodo.slice(5) - 1]), 'Total'],
-    ...claves.map(k => { const vs = ms.map(x => (x.clasificaciones?.[k] || 0) / 100); return [nombreDe(k), ...vs, vs.reduce((a, b) => a + b, 0)]; }),
-    ['Total', ...ms.map(x => x.total / 100), ms.reduce((a, x) => a + x.total, 0) / 100]] };
+    ...claves.map(k => { const vs = ms.map(x => P(x.clasificaciones?.[k])); return [nombreDe(k), ...vs, vs.reduce((a, b) => a + b, 0)]; }),
+    ['Total', ...ms.map(x => P(x.total)), P(ms.reduce((a, x) => a + x.total, 0))]], moneda: ms.map((_, i) => i + 1).concat(ms.length + 1) };
 };
 const hojaDetalle = (grupos, conceptoFn = x => x.concepto) => ({ nombre: 'Detalle', filas: [['Grupo', 'Clasificación', 'Concepto', 'Importe'],
-  ...grupos.flatMap(g => g.clasificaciones.flatMap(c => c.conceptos.map(x => [g.nombre, c.nombre, conceptoFn(x), x.total / 100])))] });
+  ...grupos.flatMap(g => g.clasificaciones.flatMap(c => c.conceptos.map(x => [g.nombre, c.nombre, conceptoFn(x), P(x.total)]))),
+  ['Total', '', '', P(grupos.reduce((a, g) => a + g.total, 0))]], moneda: [3] });
+const hojaResumen = (titulo, filas) => ({ nombre: titulo, filas: [['Concepto', 'Importe'], ...filas.map(([k, v]) => [k, P(v)])], moneda: [1], total: false });
 
 // ---------- Ingresos ----------
 export async function ingresosVista(el, ctx, q, ruta) {
@@ -77,7 +83,13 @@ export async function ingresosVista(el, ctx, q, ruta) {
   filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
   ctx.acciones({
     pdf: () => conPdf('pdfIngresos', d),
-    excel: () => excel(`ingresos-${p.anio}${p.mes ? '-' + String(p.mes).padStart(2, '0') : ''}.xlsx`, [hojaMeses(`Ingresos ${p.anio}`, ms, nombreClasif), hojaDetalle(d.grupos)]),
+    excel: () => excel(`ingresos-${p.anio}${p.mes ? '-' + String(p.mes).padStart(2, '0') : ''}.xlsx`, 'Reporte de ingresos', p.texto, [
+      hojaResumen('Resumen', [...d.grupos.map(g => [g.nombre, g.total]), ['Total de ingresos', d.total], ['Recibos cancelados en el periodo', -d.cancelados.monto], ['Periodo anterior', d.anterior?.total || 0]]),
+      { nombre: 'Por forma de pago', filas: [['Forma de pago', 'Pagos', 'Importe'], ...d.por_metodo.map(x => [x.metodo, x.n, P(x.monto)]), ['Total', d.por_metodo.reduce((a, x) => a + x.n, 0), P(d.cobrado)]], moneda: [2] },
+      { nombre: 'Por cuenta', filas: [['Cuenta', 'Pagos', 'Importe'], ...d.por_cuenta.map(x => [x.cuenta, x.n, P(x.monto)]), ['Total', d.por_cuenta.reduce((a, x) => a + x.n, 0), P(d.cobrado)]], moneda: [2] },
+      { nombre: 'Por unidad', filas: [['Unidad', 'Propietario', 'Pagos', 'Importe'], ...d.por_unidad.map(x => [x.clave, x.propietario || '', x.n, P(x.monto)]), ['Total', '', d.por_unidad.reduce((a, x) => a + x.n, 0), P(d.cobrado)]], moneda: [3] },
+      ...(d.recibos ? [{ nombre: 'Recibos', filas: [['Recibo', 'Fecha', 'Unidad', 'Propietario', 'Forma de pago', 'Cuenta', 'Referencia', 'Importe'], ...d.recibos.map(r => [`R-${r.folio}`, r.fecha, r.clave, r.propietario || '', r.metodo, r.cuenta, r.referencia || '', P(r.monto)]), ['Total', '', '', '', '', '', '', P(d.cobrado)]], moneda: [7] }] : []),
+      hojaMeses(`Mes con mes ${p.anio}`, ms, nombreClasif), hojaDetalle(d.grupos)]),
   });
 }
 
@@ -110,7 +122,13 @@ export async function egresosVista(el, ctx, q, ruta) {
   filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
   ctx.acciones({
     pdf: () => conPdf('pdfEgresos', d),
-    excel: () => excel(`egresos-${p.anio}${p.mes ? '-' + String(p.mes).padStart(2, '0') : ''}.xlsx`, [hojaMeses(`Egresos ${p.anio}`, ms, nombreClasif), hojaDetalle(d.grupos, conceptoEgreso)]),
+    excel: () => excel(`egresos-${p.anio}${p.mes ? '-' + String(p.mes).padStart(2, '0') : ''}.xlsx`, 'Reporte de egresos', p.texto, [
+      hojaResumen('Resumen', [...d.grupos.map(g => [g.nombre, g.total]), ['Total de egresos', d.total], ['Pagado', d.pagado], ['Por pagar', d.por_pagar], ['Presupuesto del periodo', d.presupuesto?.total || 0], ['Periodo anterior', d.anterior?.total || 0]]),
+      { nombre: 'Por partida', filas: [['Partida', 'Grupo', 'Ejercido', 'Presupuesto', 'Diferencia'], ...d.grupos.flatMap(g => g.clasificaciones.map(c => [c.nombre, g.nombre, P(c.total), g.clave === 'ordinarios' ? P(c.presupuesto) : '', g.clave === 'ordinarios' ? P((c.presupuesto || 0) - c.total) : ''])),
+        ['Total', '', P(d.total), P(d.presupuesto?.total), P((d.presupuesto?.total || 0) - (d.presupuesto?.ejercido || 0))]], moneda: [2, 3, 4] },
+      { nombre: 'Por proveedor', filas: [['Proveedor', 'Documentos', 'Importe'], ...d.por_proveedor.map(x => [x.proveedor, x.n, P(x.monto)]), ['Total', d.por_proveedor.reduce((a, x) => a + x.n, 0), P(d.total)]], moneda: [2] },
+      { nombre: 'Documentos', filas: [['Folio', 'Fecha', 'Partida', 'Concepto', 'Proveedor', 'Factura', 'Estado', 'Importe'], ...d.grupos.flatMap(g => g.clasificaciones.flatMap(c => c.conceptos.map(x => [`E-${x.folio}`, x.fecha, c.nombre, x.concepto, x.proveedor || '', x.factura || '', x.estado, P(x.total)]))), ['Total', '', '', '', '', '', '', P(d.total)]], moneda: [7] },
+      hojaMeses(`Mes con mes ${p.anio}`, ms, nombreClasif)]),
   });
 }
 
@@ -121,7 +139,7 @@ export async function cxcVista(el, ctx, q, ruta) {
   const d = await capi(`/morosidad?corte=${p.hasta}`);
   const rows = d.unidades.filter(u => u.adeudo > 0).sort((a, b) => b.adeudo - a.adeudo);
   const r = d.resumen, total = rows.reduce((a, u) => a + u.adeudo, 0);
-  mount(el, html`${filtros(p, botonPdf())}
+  mount(el, html`${filtros(p, html`<button type="button" class="btn ghost" data-action="excel">Exportar a Excel</button>${botonPdf()}`)}
     <section class="panel"><div class="kpis">
       <div class="kpi"><p class="label">Total por cobrar al ${fecha(d.corte)}</p><p class="kpi-value md">${pesos(total)}</p><p class="sub">${rows.length} de ${r.unidades} unidades</p></div>
       <div class="kpi"><p class="label">Vencido</p><p class="kpi-value md ${r.vencido ? 'neg-t' : 'zero'}">${pesos(r.vencido)}</p></div>
@@ -135,14 +153,16 @@ export async function cxcVista(el, ctx, q, ruta) {
         rows, { vacio: 'Ninguna unidad tiene saldo por cobrar.', pie: ['Total', ...BANDAS.map(([k]) => pesos(rows.reduce((a, u) => a + u[k], 0))), pesos(total)] })}</section>`);
   if (rows.length) window.Charts?.barList($('#ch-top', el), rows.slice(0, 10).map(u => ({ label: `${u.clave} · ${u.propietario || ''}`, value: u.adeudo / 100 })), { format: pesosFmt });
   filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
-  ctx.acciones({ pdf: () => conPdf('pdfCxc', d) });
+  ctx.acciones({ pdf: () => conPdf('pdfCxc', d), excel: () => excel(`cuentas-por-cobrar-${d.corte}.xlsx`, 'Cuentas por cobrar', `Al ${fecha(d.corte)}`, [
+    { nombre: 'Por unidad', filas: [['Unidad', 'Propietario', ...BANDAS.map(b => b[1]), 'Total por cobrar', 'Saldo a favor', 'Último pago'], ...rows.map(u => [u.clave, u.propietario || '', ...BANDAS.map(([k]) => P(u[k])), P(u.adeudo), P(u.saldo_favor), u.ultimo_pago || '']),
+      ['Total', '', ...BANDAS.map(([k]) => P(rows.reduce((a, u) => a + u[k], 0))), P(total), P(rows.reduce((a, u) => a + u.saldo_favor, 0)), '']], moneda: [2, 3, 4, 5, 6, 7, 8] }]) });
 }
 
 export async function morosidadVista(el, ctx, q, ruta) {
   const p = leerPeriodo(q);
   const d = await capi(`/morosidad?corte=${p.hasta}`);
   const r = d.resumen, rows = d.unidades.filter(u => u.activo && u.vencido > 0).sort((a, b) => b.vencido - a.vencido);
-  mount(el, html`${filtros(p, botonPdf())}
+  mount(el, html`${filtros(p, html`<button type="button" class="btn ghost" data-action="excel">Exportar a Excel</button>${botonPdf()}`)}
     <section class="panel"><div class="kpis">
       <div class="kpi"><p class="label">Morosidad al ${fecha(d.corte)}</p><p class="kpi-value md ${r.morosas ? 'neg-t' : ''}">${pct(r.pct_morosidad)}</p><p class="sub">${r.morosas} de ${r.unidades} unidades</p></div>
       <div class="kpi"><p class="label">Cartera vencida</p><p class="kpi-value md">${pesos(r.vencido)}</p></div>
@@ -157,7 +177,15 @@ export async function morosidadVista(el, ctx, q, ruta) {
         { t: '', k: u => u.convenio ? pill(u.convenio.al_corriente ? ['Convenio', 'pos'] : ['Convenio atrasado', 'neg']) : '' }], rows, { vacio: 'Sin unidades morosas a la fecha.' })}</section>`);
   if (rows.length) window.Charts?.barList($('#ch-mor', el), rows.slice(0, 10).map(u => ({ label: `${u.clave} · ${u.propietario || ''}`, value: u.vencido / 100 })), { format: pesosFmt });
   filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
-  ctx.acciones({ pdf: () => conPdf('pdfMorosidad', d) });
+  ctx.acciones({ pdf: async () => conPdf('pdfMorosidad', await capi(`/morosidad?corte=${p.hasta}&detalle=1`)), excel: async () => {
+    const dd = await capi(`/morosidad?corte=${p.hasta}&detalle=1`), mor = new Set(rows.map(u => u.id));
+    await excel(`morosidad-${d.corte}.xlsx`, 'Reporte de morosidad', `Al ${fecha(d.corte)}`, [
+      { nombre: 'Unidades morosas', filas: [['Unidad', 'Propietario', 'Teléfono', 'Correo', 'Cuotas vencidas', 'Días de atraso', 'Recargos', 'Vencido', 'Último pago', 'Convenio'], ...rows.map(u => [u.clave, u.propietario || '', u.telefono || '', u.email || '', u.meses, u.dias_max, P(u.recargos), P(u.vencido), u.ultimo_pago || '', u.convenio ? 'Sí' : '']),
+        ['Total', '', '', '', rows.reduce((a, u) => a + u.meses, 0), '', P(rows.reduce((a, u) => a + u.recargos, 0)), P(r.vencido), '', '']], moneda: [6, 7] },
+      { nombre: 'Cargos vencidos', filas: [['Unidad', 'Concepto', 'Vencimiento', 'Días', 'Importe', 'Saldo'], ...dd.cargos.filter(c => c.dias > 0 && mor.has(c.unidad_id)).map(c => [c.clave, c.concepto, c.vencimiento, c.dias, P(c.monto_cents), P(c.saldo_cents)]),
+        ['Total', '', '', '', '', P(r.vencido)]], moneda: [4, 5] },
+      { nombre: 'Tendencia', filas: [['Mes', 'Cartera vencida', 'Unidades morosas', '% morosidad'], ...dd.tendencia.map(t => [MESES_L[+t.periodo.slice(5) - 1] + ' ' + t.periodo.slice(0, 4), P(t.vencido), t.morosas, t.pct_morosidad])], moneda: [1], pct: [3], total: false }]);
+  } });
 }
 
 // ---------- Saldos bancarios ----------
@@ -165,7 +193,7 @@ export async function bancosVista(el, ctx, q, ruta) {
   const p = leerPeriodo(q);
   const d = await capi(`/reportes/bancos?${p.qs}`);
   const T = d.totales;
-  mount(el, html`${filtros(p, botonPdf())}
+  mount(el, html`${filtros(p, html`<button type="button" class="btn ghost" data-action="excel">Exportar a Excel</button>${botonPdf()}`)}
     <section class="panel"><div class="kpis">
       <div class="kpi"><p class="label">Saldo anterior</p><p class="kpi-value md">${pesos(T.anterior)}</p></div>
       <div class="kpi"><p class="label">Ingresos · ${p.texto}</p><p class="kpi-value md pos-t">${pesos(T.ingresos)}</p></div>
@@ -176,14 +204,18 @@ export async function bancosVista(el, ctx, q, ruta) {
       <div class="bank-chart" id="ch-b${i}"></div></section>`)}</div>`);
   d.cuentas.forEach((c, i) => window.Charts?.line($(`#ch-b${i}`, el), { labels: c.serie.map(s => mesCorto(s.periodo)), series: [{ name: 'Saldo', values: c.serie.map(s => s.saldo / 100) }], format: pesosFmt, tickFormat: window.Charts.fmt.compact, height: 140 }));
   filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
-  ctx.acciones({ pdf: () => conPdf('pdfBancos', d) });
+  ctx.acciones({ pdf: () => conPdf('pdfBancos', d), excel: () => excel(`saldos-bancarios-${p.hastaP}.xlsx`, 'Saldos de bancos y caja', p.texto, [
+    { nombre: 'Resumen', filas: [['Cuenta', 'Código', 'Saldo anterior', 'Ingresos', 'Egresos', 'Saldo final'], ...d.cuentas.map(c => [`${c.banco} · ${c.nombre}`, c.codigo, P(c.anterior), P(c.ingresos), P(c.egresos), P(c.final)]),
+      ['Total', '', P(T.anterior), P(T.ingresos), P(T.egresos), P(T.final)]], moneda: [2, 3, 4, 5] },
+    ...d.cuentas.map(c => ({ nombre: `${c.banco} ${c.nombre}`.slice(0, 31), filas: [['Fecha', 'Póliza', 'Concepto', 'Entrada', 'Salida', 'Saldo'], ['', '', 'Saldo anterior', '', '', P(c.anterior)], ...c.movimientos.map(m => [m.fecha, m.poliza, m.concepto, P(m.entrada), P(m.salida), P(m.saldo)]),
+      ['Total', '', '', P(c.ingresos), P(c.egresos), P(c.final)]], moneda: [3, 4, 5] }))]) });
 }
 
 // ---------- Conciliación bancaria ----------
 export async function conciliacionVista(el, ctx, q, ruta) {
   const p = leerPeriodo(q);
   const d = await capi(`/reportes/conciliacion?${p.qs}`);
-  mount(el, html`${filtros(p, botonPdf())}
+  mount(el, html`${filtros(p, html`<button type="button" class="btn ghost" data-action="excel">Exportar a Excel</button>${botonPdf()}`)}
     ${d.cuentas.map(c => html`<section class="panel top-gap"><header><h2>${c.banco} · ${c.nombre}</h2><span class="meta">${c.sin_estado ? 'Sin estado de cuenta importado' : `Al ${fecha(d.corte)} · ${c.periodo.conciliados} de ${c.periodo.movimientos} movimientos del periodo conciliados`}</span></header>
       ${c.sin_estado ? html`<p class="note">Importe el estado de cuenta del banco en <a class="link" href="#/c/${S.cid}/bancos">Bancos y conciliación</a> para conciliar esta cuenta. Saldo en libros: <b>${pesos(c.libros)}</b>.</p>` : html`<div class="grid top">
         <div class="c6"><ul class="rows">
@@ -192,6 +224,7 @@ export async function conciliacionVista(el, ctx, q, ruta) {
           <li><span class="t">(+) Retiros del banco sin registrar</span><span class="v">${pesos(c.cargos_no_registrados)}</span></li>
           <li><span class="t">(+) Depósitos en tránsito</span><span class="v">${pesos(c.depositos_transito)}</span></li>
           <li><span class="t">(−) Pagos en tránsito</span><span class="v">${pesos(-c.pagos_transito)}</span></li>
+          ${c.otros_libros ? html`<li><span class="t">(±) Otros asientos en libros <span class="sub-t">traspasos, cancelaciones y ajustes</span></span><span class="v">${pesos(c.otros_libros)}</span></li>` : ''}
           <li><span class="t"><b>Saldo conciliado</b></span><span class="v"><b>${pesos(c.saldo_conciliado)}</b></span></li>
           <li><span class="t">Saldo en libros</span><span class="v">${pesos(c.libros)}</span></li>
           <li><span class="t"><b>Diferencia por aclarar</b></span><span class="v ${c.diferencia ? 'neg-t' : 'zero'}"><b>${pesos(c.diferencia)}</b></span></li></ul></div>
@@ -200,7 +233,14 @@ export async function conciliacionVista(el, ctx, q, ruta) {
         ${c.depositos_en_transito.length ? html`<h3 class="top-gap">Depósitos en tránsito</h3>${tabla([{ t: 'Fecha', k: x => fecha(x.fecha), cls: 'nowrap' }, { t: 'Documento', k: x => html`${x.documento}<span class="sub-t">${x.referencia || ''}</span>` }, { t: 'Importe', num: true, k: x => m(x.monto) }], c.depositos_en_transito.slice(0, 50))}` : ''}
         ${c.pagos_en_transito.length ? html`<h3 class="top-gap">Pagos en tránsito</h3>${tabla([{ t: 'Fecha', k: x => fecha(x.fecha), cls: 'nowrap' }, { t: 'Documento', k: x => x.documento }, { t: 'Importe', num: true, k: x => m(-x.monto) }], c.pagos_en_transito.slice(0, 50))}` : ''}`}</section>`)}`);
   filtrosAuto($('[data-f]', el), qs => { location.hash = `${ruta}?${qs}`; });
-  ctx.acciones({ pdf: () => conPdf('pdfConciliacion', d) });
+  ctx.acciones({ pdf: () => conPdf('pdfConciliacion', d), excel: () => excel(`conciliacion-${d.corte}.xlsx`, 'Conciliación bancaria', `Al ${fecha(d.corte)}`, d.cuentas.filter(c => !c.sin_estado).flatMap(c => [
+    hojaResumen(`${c.banco} ${c.nombre}`.slice(0, 31), [['Saldo según estado de cuenta', c.saldo_banco], ['(−) Depósitos del banco sin registrar', -c.abonos_no_registrados], ['(+) Retiros del banco sin registrar', c.cargos_no_registrados],
+      ['(+) Depósitos en tránsito', c.depositos_transito], ['(−) Pagos en tránsito', -c.pagos_transito], ['(±) Otros asientos en libros', c.otros_libros], ['Saldo conciliado', c.saldo_conciliado], ['Saldo en libros', c.libros], ['Diferencia por aclarar', c.diferencia]]),
+    { nombre: `Partidas ${c.nombre}`.slice(0, 31), filas: [['Tipo', 'Fecha', 'Documento o descripción', 'Referencia', 'Importe'],
+      ...c.no_registrados.map(x => ['Banco sin registrar', x.fecha, x.descripcion || '', x.referencia || '', P(x.abono_cents || -x.cargo_cents)]),
+      ...c.depositos_en_transito.map(x => ['Depósito en tránsito', x.fecha, x.documento, x.referencia || '', P(x.monto)]),
+      ...c.pagos_en_transito.map(x => ['Pago en tránsito', x.fecha, x.documento, x.referencia || '', P(-x.monto)]),
+      ...c.otros_en_libros.map(x => ['Otro asiento en libros', x.fecha, x.documento, '', P(x.monto)])], moneda: [4], total: false }])) });
 }
 
 export const hoyStr = hoy;

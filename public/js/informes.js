@@ -27,8 +27,30 @@ function ticks(max, n = 5) {
 }
 
 // ---------- Documento con encabezado, pie y paginación ----------
+// Logotipo del condominio para los PDF: se convierte a JPEG (fondo blanco) una sola vez por condominio.
+const logos = new Map();
+export async function cargarLogo(condominio) {
+  if (!(condominio?.logo || condominio?.logo_archivo_id) || !condominio.id || typeof document === 'undefined') return null;
+  if (logos.has(condominio.id)) return logos.get(condominio.id);
+  const prom = (async () => {
+    try {
+      const r = await fetch(`/api/c/${condominio.id}/logo`, { credentials: 'same-origin' });
+      if (!r.ok) return null;
+      const bmp = await createImageBitmap(await r.blob());
+      const k = Math.min(1, 320 / Math.max(bmp.width, bmp.height));
+      const cv = Object.assign(document.createElement('canvas'), { width: Math.max(1, Math.round(bmp.width * k)), height: Math.max(1, Math.round(bmp.height * k)) });
+      const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); g.drawImage(bmp, 0, 0, cv.width, cv.height);
+      const jpg = await new Promise(ok => cv.toBlob(ok, 'image/jpeg', 0.9));
+      return { jpeg: new Uint8Array(await jpg.arrayBuffer()), px: cv.width, py: cv.height };
+    } catch { return null; }
+  })();
+  logos.set(condominio.id, prom);
+  return prom;
+}
+
 export class Informe {
-  constructor({ condominio, titulo, periodo, color = COLORES.ingresos, etiqueta }) {
+  constructor({ condominio, titulo, periodo, color = COLORES.ingresos, etiqueta, logo = null }) {
+    this.logo = logo;
     this.pdf = new PDF(); this.W = this.pdf.W; this.H = this.pdf.H;
     this.M = 40; this.CW = this.W - 80; this.limite = this.H - 66;
     this.documento({ condominio, titulo, periodo, color, etiqueta });
@@ -42,11 +64,16 @@ export class Informe {
     p.pagina();
     p.rect(M, 26, this.CW, 9, { fill: this.color, r: 4.5, arriba: true });
     if (primera) {
+      if (this.logo) { // logotipo del condominio, a lo más 120 × 48 pt
+        const k = Math.min(120 / this.logo.px, 48 / this.logo.py);
+        p.imagen(this.logo.jpeg, this.logo.px, this.logo.py, this.logo.px, this.logo.py, M, 48, this.logo.px * k, this.logo.py * k);
+      } else {
       // marca: monograma del condominio
-      p.rect(M, 52, 40, 40, { fill: '#14241f', r: 8 });
+      p.rect(M, 52, 40, 40, { fill: '#0f1b2d', r: 8 });
       p.trazo([[M + 10, 82], [M + 10, 64], [M + 20, 59], [M + 30, 64], [M + 30, 82]], { color: '#ffffff', lw: 1.6 });
       p.linea(M + 20, 59, M + 20, 82, { color: '#ffffff', lw: 1.6 });
-      p.rect(M + 20.8, 71, 8.4, 10.2, { fill: '#c9a35a' });
+      p.rect(M + 20.8, 71, 8.4, 10.2, { fill: '#2dd4bf' });
+      }
       const x = this.W - M;
       p.texto(this.c.nombre || 'Condominio', x, 64, { size: 15, bold: true, align: 'right', color: '#111827', max: this.CW - 60 });
       p.texto(this.titulo, x, 82, { size: 12.5, align: 'right', color: '#111827' });
@@ -262,6 +289,7 @@ export class Informe {
   }
   async guardar(nombre) {
     const p = this.pdf, n = p.numPaginas, f = dmy(hoyISO());
+    const marca = `${this.c.nombre || ''}`;
     for (let i = 1; i <= n; i++) {
       p.enPagina(i);
       const y = this.H - 52;
@@ -273,7 +301,8 @@ export class Informe {
       p.texto(f, this.M + this.CW - 14 - wd, y + 16.5, { size: 8, bold: true, color: '#111827', align: 'right' });
       p.texto('Fecha de descarga: ', this.M + this.CW - 14 - wd - wf, y + 16.5, { size: 8, color: '#111827', align: 'right' });
     }
-    await guardarBlob(p.blob(), nombre);
+    void marca;
+    await guardarBlob(await p.blob(), nombre);
   }
 }
 
@@ -297,12 +326,20 @@ function detalleAgrupado(R, grupos, { totalTexto, conceptoDe = x => x.concepto }
   R.tabla([{ t: 'Concepto', wrap: true }, { t: 'Importe', w: 110, align: 'right', monto: true }], filas);
 }
 
+function tablaDesglose(R, titulo, filas, total, { col = 'Concepto', n = 'Movimientos' } = {}) {
+  if (!filas.length) return;
+  R.seccion(titulo);
+  R.tabla([{ t: col, wrap: true }, { t: n, w: 80, align: 'center' }, { t: '% del total', w: 80, align: 'right' }, { t: 'Importe', w: 110, align: 'right' }],
+    [...filas.map(([k, cnt, v]) => [k, String(cnt), total ? `${(v / total * 100).toFixed(1)}%` : '—', dinero(v)]), { celdas: ['Total', String(filas.reduce((a, f) => a + f[1], 0)), '100%', dinero(total)], estilo: 'banda', ultima: true }], { size: 8.5 });
+}
+
 // ---------- Reporte de ingresos ----------
 export async function pdfIngresos(d, condominio) {
-  const R = new Informe({ condominio, titulo: 'Reporte de ingresos', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.ingresos });
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Reporte de ingresos', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.ingresos });
   const COL = { pendientes: '#c8c8c8', ordinarios: '#a9d3ec', extraordinarios: '#1279a8', otros: '#f6b951' };
   const grupos = d.grupos.filter(g => g.total);
-  R.kpis([{ label: 'Total de ingresos', valor: dinero(d.total) }, { label: 'Pagos recibidos', valor: String(d.pagos) }, { label: 'Ordinarios', valor: dinero(d.grupos.find(g => g.clave === 'ordinarios')?.total || 0) }, { label: 'Extraordinarios', valor: dinero(d.grupos.find(g => g.clave === 'extraordinarios')?.total || 0) }]);
+  const varPct = (x, y) => y ? `${x >= y ? '+' : ''}${((x - y) / Math.abs(y) * 100).toFixed(1)}%` : '—';
+  R.kpis([{ label: 'Total de ingresos', valor: dinero(d.total) }, { label: 'Periodo anterior', valor: dinero(d.anterior?.total || 0) }, { label: 'Variación', valor: varPct(d.total, d.anterior?.total), tinta: d.anterior && d.total < d.anterior.total ? ROJO : VERDE }, { label: 'Pagos recibidos', valor: String(d.pagos) }]);
   R.dona(grupos.map(g => ({ label: g.clave === 'pendientes' ? `${g.nombre}*` : g.nombre, valor: g.total, color: COL[g.clave] })), { centro: 'Total de ingresos' });
   R.tabla([{ t: 'Ingresos' }, { t: 'Monto', w: 140, align: 'right' }], [...grupos.map(g => ({ celdas: [g.clave === 'pendientes' ? `${g.nombre}*` : g.nombre, dinero(g.total)], swatch: COL[g.clave] })),
     { celdas: ['Total de ingresos', dinero(d.total)], estilo: 'banda', ultima: true }], { size: 9.5 });
@@ -324,6 +361,16 @@ export async function pdfIngresos(d, condominio) {
       [...ms.map(x => [MESES[+x.periodo.slice(5) - 1], dinero(x.ordinarios || 0), dinero(x.extraordinarios || 0), dinero(x.pendientes || 0), dinero(x.otros || 0), dinero(x.total)]),
         { celdas: ['Total del año', dinero(t('ordinarios')), dinero(t('extraordinarios')), dinero(t('pendientes')), dinero(t('otros')), dinero(t('total'))], estilo: 'banda', ultima: true }], { size: 8 });
   }
+  R.nueva();
+  tablaDesglose(R, 'Por forma de pago', (d.por_metodo || []).map(x => [x.metodo, x.n, x.monto]), d.cobrado, { col: 'Forma de pago', n: 'Pagos' });
+  tablaDesglose(R, 'Por cuenta de depósito', (d.por_cuenta || []).map(x => [x.cuenta, x.n, x.monto]), d.cobrado, { col: 'Cuenta', n: 'Pagos' });
+  if (d.cancelados?.n) R.parrafo(`En el periodo se cancelaron ${d.cancelados.n} recibos por ${dinero(d.cancelados.monto)}; su importe ya está descontado del total.`, { size: 8.5, color: SUAVE });
+  if (d.recibos?.length) {
+    R.seccion('Relación de recibos', 'Cada cobro del periodo, en el orden en que se registró.');
+    R.tabla([{ t: 'Recibo', w: 50 }, { t: 'Fecha', w: 58 }, { t: 'Unidad', w: 46 }, { t: 'Propietario', wrap: true }, { t: 'Forma de pago', w: 76 }, { t: 'Referencia', w: 82 }, { t: 'Importe', w: 72, align: 'right' }],
+      [...d.recibos.map(r => ({ celdas: [`R-${r.folio}`, dmy(r.fecha), r.clave, r.propietario || '—', r.metodo, r.referencia || '', dinero(r.monto)], tintas: r.cancelado ? { 6: ROJO } : undefined })),
+        { celdas: ['Total', '', '', '', '', '', dinero(d.cobrado)], estilo: 'banda', ultima: true }], { size: 7.5 });
+  }
   R.nueva(); R.seccion('Detalle de ingresos', 'Cada clasificación con los conceptos que se cobraron en el periodo.');
   detalleAgrupado(R, d.grupos, { totalTexto: 'Total de ingresos' });
   await R.guardar(`reporte-ingresos-${slug(condominio.nombre)}-${nombrePeriodo(d.anio, d.mes)}.pdf`);
@@ -331,10 +378,11 @@ export async function pdfIngresos(d, condominio) {
 
 // ---------- Reporte de egresos ----------
 export async function pdfEgresos(d, condominio) {
-  const R = new Informe({ condominio, titulo: 'Reporte de egresos', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.egresos });
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Reporte de egresos', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.egresos });
   const grupos = d.grupos.filter(g => g.total);
   const COL = { ordinarios: '#fb8f4a', extraordinarios: '#ffbb55' };
-  R.kpis([{ label: 'Total de egresos', valor: dinero(d.total) }, { label: 'Pagado', valor: dinero(d.pagado) }, { label: 'Por pagar', valor: dinero(d.por_pagar) }, { label: 'Documentos', valor: String(d.documentos) }]);
+  const varPct = (x, y) => y ? `${x >= y ? '+' : ''}${((x - y) / Math.abs(y) * 100).toFixed(1)}%` : '—';
+  R.kpis([{ label: 'Total de egresos', valor: dinero(d.total) }, { label: 'Periodo anterior', valor: dinero(d.anterior?.total || 0) }, { label: 'Pagado', valor: dinero(d.pagado) }, { label: d.presupuesto ? 'Ejercido del presupuesto' : 'Por pagar', valor: d.presupuesto ? (d.presupuesto.total ? `${(d.presupuesto.ejercido / d.presupuesto.total * 100).toFixed(0)}%` : '—') : dinero(d.por_pagar), tinta: d.presupuesto && d.presupuesto.ejercido > d.presupuesto.total ? ROJO : undefined }]);
   R.dona(grupos.map(g => ({ label: g.nombre, valor: g.total, color: COL[g.clave] })), { centro: 'Total de egresos' });
   R.tabla([{ t: 'Egresos' }, { t: 'Monto', w: 140, align: 'right' }], [...grupos.map(g => ({ celdas: [g.nombre, dinero(g.total)], swatch: COL[g.clave] })),
     { celdas: ['Total de egresos', dinero(d.total)], estilo: 'banda', ultima: true }], { size: 9.5 });
@@ -353,6 +401,17 @@ export async function pdfEgresos(d, condominio) {
       [...ms.map(x => [MESES[+x.periodo.slice(5) - 1], dinero(x.ordinarios || 0), dinero(x.extraordinarios || 0), dinero(x.total), dinero(x.presupuesto || 0)]),
         { celdas: ['Total del año', dinero(t('ordinarios')), dinero(t('extraordinarios')), dinero(t('total')), dinero(t('presupuesto'))], estilo: 'banda', ultima: true }], { size: 8 });
   }
+  R.nueva();
+  const partidas = grupos.find(g => g.clave === 'ordinarios')?.clasificaciones || [];
+  if (d.presupuesto) {
+    R.seccion('Gasto ordinario contra presupuesto', `Presupuesto ${d.presupuesto.aprobado ? 'aprobado' : 'en borrador'} del periodo, por partida. El gasto de fondos (reserva y proyectos) no consume presupuesto.`);
+    const filas = [...partidas.map(c => ({ n: c.nombre, e: c.total, p: c.presupuesto || 0 })), ...(d.presupuesto.sin_gasto || []).map(x => ({ n: x.nombre, e: 0, p: x.presupuesto }))].sort((a, b) => a.n.localeCompare(b.n));
+    R.tabla([{ t: 'Partida', wrap: true }, { t: 'Presupuesto', w: 88, align: 'right' }, { t: 'Ejercido', w: 88, align: 'right' }, { t: 'Diferencia', w: 88, align: 'right' }, { t: '% ejercido', w: 64, align: 'right' }],
+      [...filas.map(f => ({ celdas: [f.n, dinero(f.p), dinero(f.e), dinero(f.p - f.e), f.p ? `${(f.e / f.p * 100).toFixed(0)}%` : '—'], tintas: f.e > f.p && f.p ? { 3: ROJO, 4: ROJO } : undefined })),
+        { celdas: ['Total', dinero(d.presupuesto.total), dinero(d.presupuesto.ejercido), dinero(d.presupuesto.total - d.presupuesto.ejercido), d.presupuesto.total ? `${(d.presupuesto.ejercido / d.presupuesto.total * 100).toFixed(0)}%` : '—'], estilo: 'banda', ultima: true }], { size: 8 });
+  }
+  tablaDesglose(R, 'Por proveedor', (d.por_proveedor || []).map(x => [x.proveedor, x.n, x.monto]), d.total, { col: 'Proveedor', n: 'Documentos' });
+  tablaDesglose(R, 'Pagos por cuenta de salida', (d.por_cuenta || []).map(x => [x.cuenta, x.n, x.monto]), d.pagado, { col: 'Cuenta', n: 'Pagos' });
   R.nueva(); R.seccion('Detalle de egresos', 'Cada clasificación con los gastos del periodo (folio, fecha y proveedor).');
   detalleAgrupado(R, d.grupos, { totalTexto: 'Total de egresos', conceptoDe: x => `${x.concepto}${x.proveedor ? ` · ${x.proveedor}` : ''} · E-${x.folio} · ${dmy(x.fecha)}${x.estado === 'aprobado' ? ' · por pagar' : ''}` });
   await R.guardar(`reporte-egresos-${slug(condominio.nombre)}-${nombrePeriodo(d.anio, d.mes)}.pdf`);
@@ -361,7 +420,7 @@ export async function pdfEgresos(d, condominio) {
 // ---------- Saldos de bancos y cajas ----------
 export async function pdfBancos(d, condominio) {
   const periodo = d.desde === d.hasta ? mesNombre(d.hasta) : `${mesNombre(d.desde)} a ${mesNombre(d.hasta)}`;
-  const R = new Informe({ condominio, titulo: 'Saldo de bancos y cajas', periodo, color: COLORES.bancos });
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Saldo de bancos y cajas', periodo, color: COLORES.bancos });
   const T = d.totales;
   R.kpis([{ label: 'Saldo anterior', valor: dinero(T.anterior) }, { label: 'Ingresos', valor: dinero(T.ingresos), color: '#3cc13b' }, { label: 'Egresos', valor: dinero(T.egresos), color: COLORES.egresos }, { label: 'Saldo final', valor: dinero(T.final) }]);
   const verde = '#3cc13b', azul = '#2563eb';
@@ -389,7 +448,7 @@ export async function pdfBancos(d, condominio) {
 
 // ---------- Conciliación bancaria ----------
 export async function pdfConciliacion(d, condominio) {
-  const R = new Informe({ condominio, titulo: 'Conciliación bancaria', periodo: `Al ${dmy(d.corte)}`, color: COLORES.conciliacion });
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Conciliación bancaria', periodo: `Al ${dmy(d.corte)}`, color: COLORES.conciliacion });
   const con = d.cuentas.filter(c => !c.sin_estado);
   R.kpis([{ label: 'Cuentas conciliadas', valor: `${con.filter(c => !c.diferencia).length} de ${d.cuentas.length}` }, { label: 'Movimientos del periodo', valor: String(con.reduce((a, c) => a + c.periodo.movimientos, 0)) },
     { label: 'Conciliados', valor: pct(con.reduce((a, c) => a + c.periodo.conciliados, 0), con.reduce((a, c) => a + c.periodo.movimientos, 0), 0) }, { label: 'Diferencia total', valor: dinero(con.reduce((a, c) => a + c.diferencia, 0)), tinta: con.some(c => c.diferencia) ? ROJO : VERDE }]);
@@ -406,6 +465,7 @@ export async function pdfConciliacion(d, condominio) {
       ['(+) Retiros en el banco no registrados en libros', dinero(c.cargos_no_registrados)],
       ['(+) Depósitos registrados aún no reflejados en el banco', dinero(c.depositos_transito)],
       ['(−) Pagos registrados aún no reflejados en el banco', dinero(-c.pagos_transito)],
+      ...(c.otros_libros ? [['(±) Otros asientos en libros (traspasos, cancelaciones, ajustes)', dinero(c.otros_libros)]] : []),
       { celdas: ['Saldo conciliado', dinero(c.saldo_conciliado)], estilo: 'total' },
       ['Saldo en libros', dinero(c.libros)],
       { celdas: ['Diferencia por aclarar', dinero(c.diferencia)], estilo: 'banda', ultima: true },
@@ -423,7 +483,7 @@ const BANDAS = [['por_vencer', 'Por vencer', '#9fcbe9'], ['d30', '1 a 30 días',
 
 // ---------- Cuentas por cobrar ----------
 export async function pdfCxc(d, condominio) {
-  const R = new Informe({ condominio, titulo: 'Cuentas por cobrar', periodo: `Al ${dmy(d.corte)}`, color: COLORES.cxc });
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Cuentas por cobrar', periodo: `Al ${dmy(d.corte)}`, color: COLORES.cxc });
   const rows = d.unidades.filter(u => u.adeudo > 0).sort((a, b) => a.clave.localeCompare(b.clave, 'es', { numeric: true }));
   const r = d.resumen, adeudo = rows.reduce((a, u) => a + u.adeudo, 0);
   R.kpis([{ label: 'Total por cobrar', valor: dinero(adeudo) }, { label: 'Vencido', valor: dinero(r.vencido), tinta: r.vencido ? ROJO : undefined }, { label: 'Por vencer', valor: dinero(r.por_vencer) }, { label: 'Unidades con adeudo', valor: `${rows.length} de ${r.unidades}` }]);
@@ -439,16 +499,27 @@ export async function pdfCxc(d, condominio) {
 
 // ---------- Morosidad ----------
 export async function pdfMorosidad(d, condominio) {
-  const R = new Informe({ condominio, titulo: 'Reporte de morosidad', periodo: `Al ${dmy(d.corte)}`, color: COLORES.morosidad });
+  const R = new Informe({ logo: await cargarLogo(condominio), condominio, titulo: 'Reporte de morosidad', periodo: `Al ${dmy(d.corte)}`, color: COLORES.morosidad });
   const r = d.resumen, rows = d.unidades.filter(u => u.activo && u.vencido > 0).sort((a, b) => b.vencido - a.vencido);
   R.kpis([{ label: 'Morosidad', valor: `${(r.pct_morosidad * 100).toFixed(1)}%` }, { label: 'Unidades morosas', valor: `${r.morosas} de ${r.unidades}` }, { label: 'Cartera vencida', valor: dinero(r.vencido), tinta: r.vencido ? ROJO : undefined }, { label: 'Más de 90 días', valor: dinero(r.d90mas), tinta: r.d90mas ? ROJO : undefined }]);
   R.seccion('Antigüedad de la cartera vencida');
   R.barrasH(BANDAS.slice(1).map(([k, l, c]) => ({ label: l, valor: r[k], color: c })), { etiqueta: 110 });
   if (rows.length) { R.seccion('Unidades con mayor adeudo vencido'); R.barrasH(rows.slice(0, 12).map(u => ({ label: `${u.clave} · ${u.propietario || ''}`, valor: u.vencido, color: COLORES.morosidad }))); }
+  if (d.tendencia?.length) {
+    R.seccion('Tendencia de la cartera vencida', 'Saldo vencido al cierre de cada mes.');
+    R.barrasV(d.tendencia.map(t => MES3[+t.periodo.slice(5) - 1]), [{ nombre: 'Cartera vencida', valores: d.tendencia.map(t => t.vencido), color: COLORES.morosidad }], { alto: 180 });
+  }
   R.seccion(`Unidades morosas (${rows.length})`);
   R.tabla([{ t: 'Unidad', w: 50 }, { t: 'Propietario', wrap: true }, { t: 'Cuotas vencidas', w: 62, align: 'center' }, { t: 'Días de atraso', w: 58, align: 'center' }, { t: 'Recargos', w: 66, align: 'right' }, { t: 'Vencido', w: 74, align: 'right' }, { t: 'Último pago', w: 64, align: 'center' }],
     [...rows.map(u => ({ celdas: [u.clave, `${u.propietario || '—'}${u.convenio ? ' · convenio' : ''}`, String(u.meses), String(u.dias_max), dinero(u.recargos), dinero(u.vencido), u.ultimo_pago ? dmy(u.ultimo_pago) : '—'], tintas: { 5: ROJO } })),
       { celdas: ['Total', '', String(rows.reduce((a, u) => a + u.meses, 0)), '', dinero(rows.reduce((a, u) => a + u.recargos, 0)), dinero(r.vencido), ''], estilo: 'banda', ultima: true }], { size: 7.5 });
+  if (d.cargos?.length) {
+    const mor = new Set(rows.map(u => u.id));
+    R.nueva(); R.seccion('Detalle de cargos vencidos', 'Cada cuota, recargo o cargo vencido de las unidades morosas.');
+    R.tabla([{ t: 'Unidad', w: 50 }, { t: 'Concepto', wrap: true }, { t: 'Vencimiento', w: 66, align: 'center' }, { t: 'Días', w: 40, align: 'center' }, { t: 'Saldo', w: 80, align: 'right' }],
+      [...d.cargos.filter(c => c.dias > 0 && mor.has(c.unidad_id)).map(c => [c.clave, c.concepto, dmy(c.vencimiento), String(c.dias), dinero(c.saldo_cents)]),
+        { celdas: ['Total', '', '', '', dinero(r.vencido)], estilo: 'banda', ultima: true }], { size: 7.5 });
+  }
   await R.guardar(`morosidad-${slug(condominio.nombre)}-${d.corte}.pdf`);
 }
 
@@ -491,7 +562,7 @@ function instruccionesPago(R, bancos, referencia) {
 }
 
 export async function pdfEstadoCuenta(d) {
-  const R = new Informe({ condominio: d.condominio, titulo: 'Estado de cuenta', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.cuenta });
+  const R = new Informe({ logo: await cargarLogo(d.condominio), condominio: d.condominio, titulo: 'Estado de cuenta', periodo: textoPeriodo(d.desde, d.hasta), color: COLORES.cuenta });
   cuerpoEstadoCuenta(R, d);
   await R.guardar(`estado-de-cuenta-${slug(d.unidad.clave)}-${d.hasta}.pdf`);
 }
@@ -499,7 +570,7 @@ export async function pdfEstadosCuenta(all) {
   let R = null;
   for (const x of all.unidades) {
     const d = { ...x, condominio: all.condominio, bancos: all.bancos, desde: all.desde, hasta: all.hasta };
-    if (!R) R = new Informe({ condominio: all.condominio, titulo: `Estado de cuenta · ${x.unidad.clave}`, periodo: textoPeriodo(all.desde, all.hasta), color: COLORES.cuenta });
+    if (!R) R = new Informe({ logo: await cargarLogo(all.condominio), condominio: all.condominio, titulo: `Estado de cuenta · ${x.unidad.clave}`, periodo: textoPeriodo(all.desde, all.hasta), color: COLORES.cuenta });
     else R.documento({ condominio: all.condominio, titulo: `Estado de cuenta · ${x.unidad.clave}`, periodo: textoPeriodo(all.desde, all.hasta), color: COLORES.cuenta });
     cuerpoEstadoCuenta(R, d);
   }
@@ -528,7 +599,7 @@ export async function pdfRecibos(recibos, nombre) {
   let R = null;
   for (const r of recibos) {
     const o = { condominio: r.condominio, titulo: `Recibo de pago R-${r.pago.folio}`, periodo: dmy(r.pago.fecha), color: COLORES.cuenta, etiqueta: 'Fecha de pago: ' };
-    if (!R) R = new Informe(o); else R.documento(o);
+    if (!R) R = new Informe({ ...o, logo: await cargarLogo(o.condominio) }); else R.documento(o);
     cuerpoRecibo(R, r);
   }
   await R.guardar(nombre || (recibos.length === 1 ? `recibo-R-${recibos[0].pago.folio}.pdf` : `recibos-${slug(recibos[0].pago.clave)}.pdf`));
@@ -564,7 +635,7 @@ export async function pdfAvisos(lista, { condominio, bancos, fecha = hoyISO(), n
   let R = null;
   for (const x of con) {
     const o = { condominio, titulo: `Aviso de cobro · ${x.unidad.clave}`, periodo: dmy(fecha), color: COLORES.morosidad, etiqueta: 'Fecha de emisión: ' };
-    if (!R) R = new Informe(o); else R.documento(o);
+    if (!R) R = new Informe({ ...o, logo: await cargarLogo(o.condominio) }); else R.documento(o);
     cuerpoAviso(R, x, condominio, bancos, fecha);
   }
   await R.guardar(nombre || (con.length === 1 ? `aviso-de-cobro-${slug(con[0].unidad.clave)}-${fecha}.pdf` : `avisos-de-cobro-${slug(condominio.nombre)}-${fecha}.pdf`));

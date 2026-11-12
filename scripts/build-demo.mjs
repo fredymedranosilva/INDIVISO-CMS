@@ -51,6 +51,7 @@ for (const c of me.condominios) {
   for (let mes = 1; mes < M; mes++) { const fin = new Date(Date.UTC(+Y, mes, 0)).toISOString().slice(0, 10); await g(`${b}/morosidad?corte=${fin}`); await g(`${b}/pagos?desde=${Y}-${pad(mes)}-01&hasta=${fin}`); await g(`${b}/egresos?desde=${Y}-${pad(mes)}-01&hasta=${fin}`); }
   await g(`${b}/pagos?desde=${P}-01&hasta=${H}`); await g(`${b}/egresos?desde=${P}-01&hasta=${H}`);
   await g(`${b}/morosidad?corte=${H}`);
+  await g(`${b}/morosidad?corte=${H}&detalle=1`);
   const pagos = await g(`${b}/pagos?desde=${addM(P, -1)}-01&hasta=${H}`);
   for (const p of pagos.filter(x => x.folio && x.estado === 'aplicado').slice(0, 150)) await g(`${b}/pagos/${p.id}/recibo`);
   await g(`${b}/pagos?estado=por_validar`);
@@ -87,7 +88,9 @@ rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
 writeFileSync(join(OUT, 'demo-data.js'), 'window.__DEMO=' + JSON.stringify({ me, snap, generado: H }) + ';\n');
 execFileSync('npx', ['-y', 'esbuild', join(ROOT, 'public/js/app.js'), '--bundle', '--format=iife', '--target=es2022', '--minify', `--outfile=${join(OUT, 'app.js')}`], { stdio: 'inherit' });
-copyFileSync(join(ROOT, 'public/css/app.css'), join(OUT, 'app.css'));
+writeFileSync(join(OUT, 'app.css'), readFileSync(join(ROOT, 'public/css/app.css'), 'utf8').replaceAll('url("/fonts/', 'url("fonts/'));
+mkdirSync(join(OUT, 'fonts'), { recursive: true });
+for (const f of ['inter.woff2', 'manrope.woff2']) copyFileSync(join(ROOT, 'public/fonts', f), join(OUT, 'fonts', f));
 copyFileSync(join(ROOT, 'public/js/charts.js'), join(OUT, 'charts.js'));
 copyFileSync(join(ROOT, 'public/favicon.svg'), join(OUT, 'favicon.svg'));
 writeFileSync(join(OUT, '.nojekyll'), '');
@@ -136,7 +139,7 @@ writeFileSync(join(OUT, 'demo-shim.js'), `// Demostración estática: sirve las 
 
 let html = readFileSync(join(ROOT, 'public/index.html'), 'utf8')
   .replace('href="/favicon.svg"', 'href="favicon.svg"')
-  .replace('href="/css/app.css"', 'href="app.css"')
+  .replace('href="/css/app.css"', 'href="app.css"').replaceAll('href="/fonts/', 'href="fonts/')
   .replace('<script src="/js/charts.js" defer></script>\n<script type="module" src="/js/app.js"></script>',
     '<script src="demo-data.js" defer></script>\n<script src="demo-shim.js" defer></script>\n<script src="charts.js" defer></script>\n<script src="app.js" defer></script>');
 writeFileSync(join(OUT, 'index.html'), html);

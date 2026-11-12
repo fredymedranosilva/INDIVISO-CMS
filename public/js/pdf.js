@@ -35,7 +35,13 @@ function rgb(hex) {
 }
 
 export class PDF {
-  constructor({ ancho = 612, alto = 792 } = {}) { this.W = ancho; this.H = alto; this.paginas = []; this.alfas = new Map(); }
+  constructor({ ancho = 612, alto = 792 } = {}) { this.W = ancho; this.H = alto; this.paginas = []; this.alfas = new Map(); this.imagenes = []; }
+  // Imagen JPEG (bytes) dibujada en el rectángulo x, y, w, h.
+  imagen(jpeg, px, py, ancho, alto, x, y, w, h) {
+    let i = this.imagenes.findIndex(im => im.jpeg === jpeg);
+    if (i < 0) { this.imagenes.push({ jpeg, px, py }); i = this.imagenes.length - 1; }
+    this.ops.push(`q ${n2(w)} 0 0 ${n2(h)} ${n2(x)} ${n2(this._y(y + h))} cm /Im${i + 1} Do Q`);
+  }
   pagina() { this.ops = []; this.paginas.push(this.ops); return this.paginas.length; }
   enPagina(i) { this.ops = this.paginas[i - 1]; }
   get numPaginas() { return this.paginas.length; }
@@ -136,30 +142,44 @@ export class PDF {
     this.ops.push(`q ${rgb(color)} rg BT /${bold ? 'F2' : 'F1'} ${n2(size)} Tf ${n2(X)} ${n2(this._y(y))} Td (${bytes}) Tj ET Q`);
     return w;
   }
-  blob() {
+  // Arma el archivo PDF; los contenidos se comprimen (FlateDecode) cuando el navegador lo permite.
+  async blob() {
+    const enc = new TextEncoder();
+    const latin = str => { const b = new Uint8Array(str.length); for (let i = 0; i < str.length; i++) b[i] = str.charCodeAt(i) & 0xff; return b; };
+    const comprimir = async bytes => {
+      if (typeof CompressionStream === 'undefined') return null;
+      const cs = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));
+      return new Uint8Array(await new Response(cs).arrayBuffer());
+    };
     const objs = [];
     const add = s => { objs.push(s); return objs.length; };
     const catalogo = add(null), paginas = add(null);
     const f1 = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
     const f2 = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
     const gs = [...this.alfas].map(([a, nombre]) => [nombre, add(`<< /Type /ExtGState /ca ${a} /CA ${a} >>`)]);
-    const recursos = `<< /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >>${gs.length ? ` /ExtGState << ${gs.map(([n, id]) => `/${n} ${id} 0 R`).join(' ')} >>` : ''} >>`;
+    const ims = this.imagenes.map((im, i) => [`Im${i + 1}`, add({ dict: `<< /Type /XObject /Subtype /Image /Width ${im.px} /Height ${im.py} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, bytes: im.jpeg })]);
+    const recursos = `<< /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >>${gs.length ? ` /ExtGState << ${gs.map(([n, id]) => `/${n} ${id} 0 R`).join(' ')} >>` : ''}${ims.length ? ` /XObject << ${ims.map(([n, id]) => `/${n} ${id} 0 R`).join(' ')} >>` : ''} >>`;
     const kids = [];
     for (const ops of this.paginas) {
-      const contenido = ops.join('\n');
-      const c = add(`<< /Length ${contenido.length} >>\nstream\n${contenido}\nendstream`);
+      const plano = latin(ops.join('\n'));
+      const z = await comprimir(plano);
+      const c = add(z ? { dict: '<< /Filter /FlateDecode', bytes: z } : { dict: '<<', bytes: plano });
       kids.push(add(`<< /Type /Page /Parent ${paginas} 0 R /MediaBox [0 0 ${this.W} ${this.H}] /Resources ${recursos} /Contents ${c} 0 R >>`));
     }
     objs[catalogo - 1] = `<< /Type /Catalog /Pages ${paginas} 0 R >>`;
     objs[paginas - 1] = `<< /Type /Pages /Kids [${kids.map(k => `${k} 0 R`).join(' ')}] /Count ${kids.length} >>`;
-    let out = '%PDF-1.4\n%âãÏÓ\n';
+    const partes = [latin('%PDF-1.4\n%âãÏÓ\n')];
+    let off = partes[0].length;
     const offs = [];
-    objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
-    const xref = out.length;
-    out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
-    out += `trailer\n<< /Size ${objs.length + 1} /Root ${catalogo} 0 R >>\nstartxref\n${xref}\n%%EOF`;
-    const bytes = new Uint8Array(out.length);
-    for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 0xff;
-    return new Blob([bytes], { type: 'application/pdf' });
+    objs.forEach((o, i) => {
+      offs.push(off);
+      const piezas = typeof o === 'string' ? [latin(`${i + 1} 0 obj\n${o}\nendobj\n`)]
+        : [latin(`${i + 1} 0 obj\n${o.dict} /Length ${o.bytes.length} >>\nstream\n`), o.bytes, latin('\nendstream\nendobj\n')];
+      for (const p of piezas) { partes.push(p); off += p.length; }
+    });
+    const xref = off;
+    partes.push(latin(`xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map(o => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objs.length + 1} /Root ${catalogo} 0 R /Info ${add ? 0 : 0} 0 R >>\nstartxref\n${xref}\n%%EOF`.replace(' /Info 0 0 R', '')));
+    void enc;
+    return new Blob(partes, { type: 'application/pdf' });
   }
 }

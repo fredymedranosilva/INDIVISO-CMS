@@ -1,6 +1,11 @@
 // Seguridad: mi cuenta (contraseña, 2FA, sesiones), usuarios y roles, bitácora encadenada y respaldos.
 import { S, api, capi, html, raw, mount, $, fechaHora, puede, tabla, pill, toast, dialogo, val, cargando, tabs, confirmar, descargar } from '../ui.js';
 
+function mostrarCodigos(codigos, ctx) {
+  dialogo({ titulo: 'Guarde sus códigos de respaldo', cuerpo: html`<p class="lead">Cada código sirve <b>una sola vez</b> para entrar si pierde su teléfono. Guárdelos en un lugar seguro: no se volverán a mostrar.</p>
+    <p class="secret num">${codigos.join('   ')}</p>`, acciones: [{ label: 'Ya los guardé', primary: true, value: 'ok' }], onSubmit: () => { toast('Verificación en dos pasos activa.'); ctx.recargar(); } });
+}
+
 const ROLES = { admin: 'Administración', contador: 'Contabilidad', comite: 'Comité de vigilancia', residente: 'Residente' };
 const DESC_ROL = { admin: 'Todo, incluidos usuarios, cancelaciones y cierres.', contador: 'Captura cobros, egresos, conciliación y pólizas. No aprueba egresos ni cancela.', comite: 'Consulta todo, aprueba egresos y revisa la bitácora. No captura.', residente: 'Solo su estado de cuenta, sus recibos y reportar pagos.' };
 
@@ -22,14 +27,21 @@ async function cuenta(el, ctx) {
   mount(el, html`<div class="grid top">
     <section class="panel c6"><header><h2>Verificación en dos pasos</h2>${pill(S.me.totp ? ['Activa', 'pos'] : ['Inactiva', 'warn'])}</header>
       <p class="lead small">${S.me.totp ? 'Al iniciar sesión se pide un código de su aplicación de autenticación además de la contraseña.' : 'Recomendada para todos los usuarios con acceso financiero. Use Google Authenticator, Authy, 1Password o similar.'}</p>
-      <button class="btn top-gap" data-action="${S.me.totp ? 'mfaOff' : 'mfaOn'}">${S.me.totp ? 'Desactivar' : 'Activar verificación en dos pasos'}</button></section>
+      ${S.me.totp ? html`<p class="small muted top-gap">Códigos de respaldo disponibles: <b>${S.me.codigos_respaldo ?? '—'}</b> de 10. Sirven para entrar si pierde el teléfono.</p>` : ''}
+      <div class="actions top-gap"><button class="btn" data-action="${S.me.totp ? 'mfaOff' : 'mfaOn'}">${S.me.totp ? 'Desactivar' : 'Activar verificación en dos pasos'}</button>${S.me.totp ? html`<button class="btn ghost" data-action="codigos">Generar códigos nuevos</button>` : ''}</div></section>
     <section class="panel c6"><header><h2>Contraseña</h2></header>
       <p class="lead small">Mínimo 12 caracteres con tres tipos: minúsculas, mayúsculas, números o símbolos. Al cambiarla se cierran sus demás sesiones.</p>
       <button class="btn top-gap" data-action="pass">Cambiar contraseña</button></section>
-    <section class="panel c12 flush"><header><h2>Sesiones activas</h2><span class="meta">Expiran tras 30 minutos sin actividad o 12 horas en total.</span></header>
+    <section class="panel c12 flush"><header><h2>Sesiones activas</h2><span class="meta">Expiran tras 30 minutos sin actividad o 12 horas en total. <button class="link" data-action="otras">Cerrar las demás</button></span></header>
       ${tabla([{ t: 'Dispositivo', k: s => html`${s.ua?.slice(0, 80) || '—'}${s.actual ? html` <span class="pill pos">esta sesión</span>` : ''}` }, { t: 'IP', k: s => s.ip }, { t: 'Inicio', k: s => fechaHora(s.created_at) }, { t: 'Última actividad', k: s => fechaHora(s.last_seen) },
         { t: '', k: s => s.actual ? '' : html`<button class="link neg" data-action="revocar" data-id="${s.id}">Cerrar</button>` }], ses)}</section></div>`);
   ctx.acciones({
+    codigos: () => dialogo({
+      titulo: 'Códigos de respaldo nuevos', cuerpo: html`<p class="lead">Los códigos anteriores dejarán de servir.</p><label class="field"><span>Contraseña</span><input type="password" name="password" required></label><label class="field"><span>Código actual de la aplicación</span><input name="code" inputmode="numeric" maxlength="6" required></label>`,
+      acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Generar', primary: true }],
+      onSubmit: async f => { const r = await api('/api/auth/totp/codigos', { method: 'POST', body: { password: f.password.value, code: val(f, 'code') } }); mostrarCodigos(r.codigos, ctx); },
+    }),
+    otras: async () => { const r = await api('/api/auth/sesiones/cerrar-otras', { method: 'POST', body: {} }); toast(`${r.cerradas} sesiones cerradas.`); ctx.recargar(); },
     revocar: async d => { await api(`/api/auth/sesiones/${d.id}/revocar`, { method: 'POST', body: {} }); toast('Sesión cerrada.'); ctx.recargar(); },
     pass: () => dialogo({
       titulo: 'Cambiar contraseña', cuerpo: html`<label class="field"><span>Contraseña actual</span><input type="password" name="actual" autocomplete="current-password" required></label>
@@ -45,7 +57,7 @@ async function cuenta(el, ctx) {
           <p class="secret num">${r.secret.match(/.{1,4}/g).join(' ')}</p><p class="small"><a class="link" href="${r.uri}">Abrir en la aplicación</a></p>
           <label class="field"><span>Código de 6 dígitos que muestra la aplicación</span><input name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required></label>`,
         acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Activar', primary: true }],
-        onSubmit: async f => { await api('/api/auth/totp/activar', { method: 'POST', body: { code: val(f, 'code') } }); S.me.totp = true; toast('Verificación en dos pasos activada.'); ctx.recargar(); },
+        onSubmit: async f => { const r2 = await api('/api/auth/totp/activar', { method: 'POST', body: { code: val(f, 'code') } }); S.me.totp = true; mostrarCodigos(r2.codigos, ctx); },
       });
     },
     mfaOff: () => dialogo({
@@ -62,7 +74,7 @@ async function usuarios(el, ctx) {
     <div class="grid top"><section class="panel c8 flush"><header><h2>${rows.length} usuarios con acceso</h2></header>
       ${tabla([{ t: 'Usuario', k: u => html`<b>${u.nombre}</b><span class="sub-t">${u.email}</span>` }, { t: 'Rol', k: u => html`${ROLES[u.rol]}${u.persona ? html`<span class="sub-t">${u.persona}</span>` : ''}` },
         { t: '2FA', k: u => u.totp_activo ? pill(['Activa', 'pos']) : pill(['No', 'neutral']) }, { t: 'Último acceso', k: u => fechaHora(u.ultimo_acceso), cls: 'hide-m' },
-        { t: '', k: u => u.id === S.me.id ? html`<span class="faint">usted</span>` : html`<span class="row-actions"><button class="link" data-action="rol" data-id="${u.id}" data-rol="${u.rol}" data-nombre="${u.nombre}">Cambiar rol</button><button class="link neg" data-action="revocar" data-id="${u.id}" data-nombre="${u.nombre}">Quitar acceso</button></span>` }], rows)}</section>
+        { t: '', k: u => u.id === S.me.id ? html`<span class="faint">usted</span>` : html`<span class="row-actions"><button class="link" data-action="ua" data-a="restablecer" data-id="${u.id}" data-nombre="${u.nombre}">Contraseña</button>${u.totp_activo ? html`<button class="link" data-action="ua" data-a="restablecer-2fa" data-id="${u.id}" data-nombre="${u.nombre}">Quitar 2FA</button>` : ''}${u.bloqueado_hasta > Date.now() ? html`<button class="link" data-action="ua" data-a="desbloquear" data-id="${u.id}" data-nombre="${u.nombre}">Desbloquear</button>` : ''}<button class="link" data-action="rol" data-id="${u.id}" data-rol="${u.rol}" data-nombre="${u.nombre}">Cambiar rol</button><button class="link neg" data-action="revocar" data-id="${u.id}" data-nombre="${u.nombre}">Quitar acceso</button></span>` }], rows)}</section>
       <section class="panel c4"><header><h2>Roles</h2></header><ul class="rows">${Object.entries(ROLES).map(([k, l]) => html`<li><span class="t"><b>${l}</b><span>${DESC_ROL[k]}</span></span></li>`)}</ul>
         <p class="note top-gap">Segregación de funciones: quien captura un egreso nunca puede aprobarlo, sin importar su rol.</p></section></div>`);
   ctx.acciones({
@@ -73,11 +85,18 @@ async function usuarios(el, ctx) {
       acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Dar acceso', primary: true }],
       onSubmit: async f => {
         const r = await capi('/usuarios', { method: 'POST', body: { nombre: val(f, 'nombre'), email: val(f, 'email'), rol: f.rol.value, persona_id: f.persona.value ? +f.persona.value : null } });
-        if (r.password_temporal) dialogo({ titulo: 'Contraseña temporal', cuerpo: html`<p class="lead">Entréguela al usuario por un canal seguro. Se muestra <b>una sola vez</b>; pídale que la cambie y active la verificación en dos pasos.</p><p class="secret num">${r.password_temporal}</p>` });
+        if (r.password_temporal) dialogo({ titulo: 'Contraseña temporal', cuerpo: html`<p class="lead">Entréguela al usuario por un canal seguro. Se muestra <b>una sola vez</b>, vence en 7 días y deberá cambiarla al entrar.</p><p class="secret num">${r.password_temporal}</p>` });
         else toast('Acceso otorgado a un usuario existente.');
         ctx.recargar();
       },
     }),
+    ua: async d => {
+      if (!await confirmar(d.nombre, { restablecer: 'Se generará una contraseña temporal (vence en 7 días) y se cerrarán sus sesiones.', 'restablecer-2fa': 'Podrá entrar solo con su contraseña y deberá activar la verificación de nuevo.', desbloquear: 'Podrá volver a intentar el acceso.' }[d.a], { label: 'Continuar', danger: d.a !== 'desbloquear' })) return;
+      const r = await capi(`/usuarios/${d.id}/${d.a}`, { method: 'POST', body: {} });
+      if (r.password_temporal) dialogo({ titulo: 'Contraseña temporal', cuerpo: html`<p class="lead">Entréguela a ${d.nombre} por un canal seguro. Se muestra <b>una sola vez</b> y deberá cambiarla al entrar.</p><p class="secret num">${r.password_temporal}</p>` });
+      else toast('Listo.');
+      ctx.recargar();
+    },
     rol: d => dialogo({
       titulo: `Rol de ${d.nombre}`, cuerpo: html`<label class="field"><span>Rol</span><select name="rol">${Object.entries(ROLES).map(([k, l]) => html`<option value="${k}" ${k === d.rol ? raw('selected') : ''}>${l}</option>`)}</select></label>`,
       acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Guardar', primary: true }],

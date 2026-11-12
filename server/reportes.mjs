@@ -568,9 +568,11 @@ export function egresosReporte(db, cid, desde, hasta, { detalle = true } = {}) {
     const pvr = presupuestoVsReal(db, cid, +desde.slice(0, 4));
     const m0 = +desde.slice(5, 7) - 1, m1 = +hasta.slice(5, 7);
     const por = new Map(pvr.rows.map(r => [`${r.codigo} · ${r.nombre}`, r.presupuesto.slice(m0, m1).reduce((x, y) => x + y, 0)]));
-    presupuesto = { total: [...por.values()].reduce((x, y) => x + y, 0), aprobado: pvr.presupuesto?.estado === 'aprobado' };
-    for (const g of grupos) for (const c of g.clasificaciones) c.presupuesto = por.get(c.nombre) ?? 0;
-    presupuesto.sin_gasto = [...por].filter(([n, v]) => v > 0 && !grupos.some(g => g.clasificaciones.some(c => c.nombre === n))).map(([nombre, monto]) => ({ nombre, presupuesto: monto }));
+    // El presupuesto es de operación: se compara solo con el gasto ordinario (el de fondos no consume presupuesto).
+    const ord = grupos.find(g => g.clave === 'ordinarios');
+    presupuesto = { total: [...por.values()].reduce((x, y) => x + y, 0), ejercido: ord?.total || 0, aprobado: pvr.presupuesto?.estado === 'aprobado' };
+    for (const c of ord?.clasificaciones || []) c.presupuesto = por.get(c.nombre) ?? 0;
+    presupuesto.sin_gasto = [...por].filter(([n, v]) => v > 0 && !ord?.clasificaciones.some(c => c.nombre === n)).map(([nombre, monto]) => ({ nombre, presupuesto: monto }));
   }
   const ant = periodoAnterior(desde, hasta);
   const orden = m => [...m.values()].sort((x, y) => y.monto - x.monto);
