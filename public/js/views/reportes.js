@@ -9,7 +9,7 @@ export async function render(el, ctx) {
   const [sub, qs] = (ctx.params[0] || 'ingresos').split('?');
   const q = new URLSearchParams(qs || '');
   mount(el, html`<div class="title-row"><div><h1>Reportes</h1><p class="sub">Reportes por mes y año con gráficas, listos para descargar en PDF; estados financieros calculados del libro contable.</p></div></div>
-    ${tabs([['ingresos', 'Ingresos'], ['egresos', 'Egresos'], ['cxc', 'Cuentas por cobrar'], ['bancos', 'Saldos bancarios'], ['conciliacion', 'Conciliación'], ['morosidad', 'Morosidad'], ['resultados', 'Estado de resultados'], ['balance', 'Balance general'], ['flujo', 'Flujo de efectivo'], ['fondos', 'Fondos'], ['liquidacion', 'Liquidación anual'], ['anual', 'Informe anual']], sub, ctx.base)}<div id="rp-body"></div>`);
+    ${tabs([['ingresos', 'Ingresos'], ['egresos', 'Egresos'], ['cxc', 'Cuentas por cobrar'], ['bancos', 'Saldos bancarios'], ['conciliacion', 'Conciliación'], ['morosidad', 'Morosidad'], ['integracion', 'Integración de saldos'], ['resultados', 'Estado de resultados'], ['balance', 'Balance general'], ['flujo', 'Flujo de efectivo'], ['fondos', 'Fondos'], ['liquidacion', 'Liquidación anual'], ['anual', 'Informe anual']], sub, ctx.base)}<div id="rp-body"></div>`);
   const body = $('#rp-body', el);
   cargando(body);
   const nuevos = { ingresos: ingresosVista, egresos: egresosVista, cxc: cxcVista, bancos: bancosVista, conciliacion: conciliacionVista, morosidad: morosidadVista };
@@ -17,7 +17,7 @@ export async function render(el, ctx) {
   const anio = hoy().slice(0, 4);
   const def = { desde: `${anio}-01`, hasta: periodoActual() };
   const c = await capi('/config');
-  const fns = { resultados, balance, flujo, reserva, fondos, liquidacion, anual };
+  const fns = { resultados, balance, flujo, reserva, fondos, liquidacion, anual, integracion };
   const doc = await (fns[sub] || resultados)(body, ctx, q, def, c);
   filtrosAuto($('[data-f]', body), p => { location.hash = `${ctx.base}/${sub}?${p}`; });
   ctx.acciones({ imprimir: () => imprimir(doc) });
@@ -153,4 +153,33 @@ async function anual(el, ctx, q, def, c) {
   const anios = [ej + 1, ej, ej - 1, ej - 2].filter(x => x <= +hoy().slice(0, 4));
   mount(el, html`<form class="filters" data-f><label class="field"><span>Ejercicio</span><select name="ejercicio" data-auto>${anios.map(x => html`<option ${x === ej ? raw('selected') : ''}>${x}</option>`)}</select></label><button class="btn">Ver</button><span class="spacer"></span><button class="btn primary" type="button" data-action="imprimir">Imprimir informe para asamblea</button></form>${doc}`);
   return doc;
+}
+
+// Integración de saldos: de qué se compone el saldo de cada unidad al corte. Se arma sola desde cargos, pagos y bonificaciones.
+async function integracion(el, ctx, q, def, c) {
+  const corte = q.get('corte') || hoy();
+  const d = await capi(`/reportes/integracion?corte=${corte}`);
+  const t = d.totales;
+  const COLS = [['saldo_inicial', 'Saldo inicial'], ['ordinarias', 'Cuotas ordinarias'], ['extraordinarias', 'Extraordinarias'], ['recargos', 'Recargos'], ['multas', 'Multas'], ['otros', 'Otros cargos']]
+    .filter(([k]) => t[k]); // solo las columnas que tienen algo
+  const v = x => x ? pesos(x) : html`<span class="zero">—</span>`;
+  const tablaI = html`<div class="table-wrap"><table class="tbl dense"><thead><tr><th>Unidad</th><th>Propietario</th>${COLS.map(([, l]) => html`<th class="r">${l}</th>`)}<th class="r">Total adeudo</th><th class="r">Saldo a favor</th><th class="r">Saldo neto</th></tr></thead>
+    <tbody>${d.unidades.map(u => html`<tr><td><b>${u.clave}</b></td><td>${u.propietario || ''}</td>${COLS.map(([k]) => html`<td class="r num">${v(u[k])}</td>`)}
+      <td class="r num">${v(u.adeudo)}</td><td class="r num pos-t">${u.saldo_favor ? pesos(u.saldo_favor) : html`<span class="zero">—</span>`}</td><td class="r num"><b class="${u.saldo_neto > 0 ? 'neg-t' : ''}">${pesos(u.saldo_neto)}</b></td></tr>`)}</tbody>
+    <tfoot><tr><td colspan="2">Total · ${d.unidades.length} unidades</td>${COLS.map(([k]) => html`<td class="r num">${pesos(t[k])}</td>`)}<td class="r num">${pesos(t.adeudo)}</td><td class="r num">${pesos(t.saldo_favor)}</td><td class="r num">${pesos(t.saldo_neto)}</td></tr></tfoot></table></div>`;
+  mount(el, html`<form class="filters" data-f><label class="field"><span>Saldos al</span><input type="date" name="corte" value="${corte}" max="${hoy()}" data-auto></label><button class="btn">Ver</button><span class="spacer"></span>
+      <button class="btn ghost" type="button" data-action="excel">Exportar a Excel</button><button class="btn ghost" type="button" data-action="imprimir">Imprimir</button></form>
+    <section class="panel"><div class="kpis">
+      <div class="kpi"><p class="label">Adeudo total</p><p class="kpi-value md">${pesos(t.adeudo)}</p><p class="sub">vencido ${pesos(t.vencido)} · por vencer ${pesos(t.por_vencer)}</p></div>
+      <div class="kpi"><p class="label">Saldos a favor</p><p class="kpi-value md">${pesos(t.saldo_favor)}</p></div>
+      <div class="kpi"><p class="label">Saldo neto por cobrar</p><p class="kpi-value md">${pesos(t.saldo_neto)}</p><p class="sub">cuadra con Cuotas por cobrar menos Anticipos</p></div></div></section>
+    <section class="panel flush top-gap"><header><h2>Integración de saldos al ${fecha(corte)}</h2><span class="meta">Se calcula sola: no requiere captura</span></header>${tablaI}</section>`);
+  ctx.acciones({ excel: async () => {
+    const { escribirXlsx, guardarBlob } = await import('../xlsx.js');
+    const enc = ['Unidad', 'Propietario', ...COLS.map(([, l]) => l), 'Total adeudo', 'Vencido', 'Por vencer', 'Saldo a favor', 'Saldo neto'];
+    const fila = (u, a, b) => [a, b, ...COLS.map(([k]) => u[k] / 100), u.adeudo / 100, u.vencido / 100, u.por_vencer / 100, u.saldo_favor / 100, u.saldo_neto / 100];
+    await guardarBlob(escribirXlsx([{ nombre: 'Integración de saldos', total: true, filas: [enc, ...d.unidades.map(u => fila(u, u.clave, u.propietario || '')), fila(t, 'Total', '')],
+      moneda: enc.map((_, i) => i).filter(i => i >= 2), titulo: ['Integración de saldos', `${c.nombre} · saldos al ${fecha(corte)}`, `Generado el ${new Date().toLocaleString('es-MX')} · Indiviso CMS`] }]), `integracion-saldos-${corte}.xlsx`);
+  } });
+  return html`<article class="doc wide-doc">${encabezado(c, 'Integración de saldos', `Saldos al ${fecha(corte)}`)}${tablaI}</article>`;
 }

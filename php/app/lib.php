@@ -224,6 +224,8 @@ function limiteLimpiar(string $key): void { db()->prepare('DELETE FROM limites W
 const GENESIS = '0000000000000000000000000000000000000000000000000000000000000000';
 function jenc($x): string { return json_encode($x, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION); }
 function audit(DB $db, array $a): void {
+  // La cadena exige leer el último hash y escribir el nuevo sin que otra petición se intercale: siempre bajo bloqueo de escritura.
+  if (!$db->enTx) { tx($db, function () use ($db, $a) { audit($db, $a); }); return; }
   $prev = $db->prepare('SELECT hash FROM auditoria ORDER BY id DESC LIMIT 1')->get()['hash'] ?? GENESIS;
   $ts = now_ms();
   $det = array_key_exists('detalle', $a) && $a['detalle'] !== null ? jenc($a['detalle']) : null;
@@ -278,7 +280,12 @@ final class DB {
     $GLOBALS['__pdo'] = $this->pdo;
   }
   public function prepare(string $sql): Stmt { return new Stmt($this->cache[$sql] ??= $this->pdo->prepare($sql)); }
-  public function exec(string $sql): void { $this->pdo->exec($sql); }
+  public bool $enTx = false; // SQLite: se lleva la cuenta de BEGIN/COMMIT/ROLLBACK para saber si hay una transacción abierta
+  public function exec(string $sql): void {
+    $fin = (bool)preg_match('/^\s*(COMMIT|END|ROLLBACK)\s*;?\s*$/i', $sql);
+    try { $this->pdo->exec($sql); } finally { if ($fin && stripos($sql, 'ROLLBACK') !== false) $this->enTx = false; }
+    if (preg_match('/^\s*BEGIN/i', $sql)) $this->enTx = true; elseif ($fin) $this->enTx = false;
+  }
 }
 function db_path(): string { return data_dir() . '/indiviso.db'; }
 function db(): DB {

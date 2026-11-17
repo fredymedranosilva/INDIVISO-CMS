@@ -1,5 +1,5 @@
-// Configuración del condominio: datos, parámetros de cobranza y controles.
-import { capi, html, raw, mount, puede, toast, val, pesos, pesosDe, centsToInput, cargando, tabla, pill, dialogo } from '../ui.js';
+// Configuración del condominio: datos, parámetros de cobranza, recargos, pronto pago, fondos e integración de saldos.
+import { S, capi, html, raw, mount, puede, toast, val, pesos, pesosDe, centsToInput, cargando, tabla, pill, dialogo } from '../ui.js';
 
 export async function render(el, ctx) {
   cargando(el);
@@ -28,16 +28,16 @@ export async function render(el, ctx) {
       ${sec('Descuento por pronto pago', 'Se aplica solo al registrar o validar un pago que liquida la cuota ordinaria completa a más tardar el día indicado del mes de la cuota. Queda como bonificación con su póliza. Deje 0 para desactivarlo.', html`<div class="form-grid">
         <label class="field"><span>Descuento (% de la cuota)</span><input name="pp_pct" class="num-in" value="${((c.pronto_pago_bp || 0) / 100).toFixed(2)}" ${ro}></label>
         <label class="field"><span>Pagando a más tardar el día</span><input name="pp_dia" type="number" min="0" max="28" value="${c.pronto_pago_dia || 0}" ${ro}></label></div>`)}
-      ${sec('Controles', 'Los egresos de este importe o más, y todo uso del fondo de reserva, necesitan la aprobación de un segundo usuario.', html`<div class="form-grid">
-        <label class="field"><span>Umbral de aprobación</span><input name="umbral" class="num-in" value="${centsToInput(c.umbral_aprobacion_cents)}" ${ro}></label>
-        <p class="note">Hoy: ${pesos(c.umbral_aprobacion_cents)}</p></div>`)}
       ${puede('config') ? html`<div class="set-actions"><button class="btn primary">Guardar configuración</button></div>` : ''}
     </form>
     <section class="set-row"><div class="set-label"><h2>Fondos</h2><p>Además del fondo de reserva, puede tener fondos para proyectos (pintura, impermeabilización, elevadores). Reciben cuotas extraordinarias y pagan sus egresos con aprobación de un segundo usuario.</p></div>
       <div class="set-panel">${tabla([{ t: 'Fondo', k: x => html`<b>${x.nombre}</b><span class="sub-t">${x.codigo}${x.descripcion ? ` · ${x.descripcion}` : ''}</span>` }, { t: 'Meta', num: true, k: x => x.meta_cents ? pesos(x.meta_cents) : '—' },
         { t: '', k: x => pill(x.activo ? ['Activo', 'pos'] : ['Inactivo', 'neutral']) }], fondos, { vacio: 'Solo el fondo de reserva.' })}
         ${puede('config') ? html`<button class="btn top-gap" type="button" data-action="fondo">Nuevo fondo</button>` : ''}
-        <p class="small muted top-gap">El saldo y los movimientos de cada fondo están en Reportes → Fondos.</p></div></section>`);
+        <p class="small muted top-gap">El saldo y los movimientos de cada fondo están en Reportes → Fondos.</p></div></section>
+    <section class="set-row"><div class="set-label"><h2>Integración de saldos</h2><p>No se configura ni se captura: el sistema la arma solo con los cargos, pagos, bonificaciones y saldos iniciales registrados.</p></div>
+      <div class="set-panel"><p>Muestra, por unidad y a la fecha de corte que elija, de qué se compone su saldo: saldo inicial, cuotas ordinarias, extraordinarias, recargos, multas y otros cargos, menos su saldo a favor. El total cuadra con la cuenta de cuotas por cobrar de la contabilidad.</p>
+        <a class="btn top-gap" href="#/c/${S.cid}/reportes/integracion">Ver reporte de integración de saldos</a></div></section>`);
   ctx.acciones({
     fondo: () => dialogo({
       titulo: 'Nuevo fondo', cuerpo: html`<div class="form-grid">
@@ -52,11 +52,21 @@ export async function render(el, ctx) {
   el.querySelector('[data-f]').addEventListener('submit', async e => {
     e.preventDefault();
     const f = e.target;
-    const bp = (s, max) => { const n = parseFloat(String(s).replace('%', '')); if (!Number.isFinite(n) || n < 0 || n > max) throw new Error('Revise los porcentajes.'); return Math.round(n * 100); };
+    // Porcentajes: acepta «3», «3.5», «3,5» o «3 %»; vacío cuenta como 0. El error dice qué campo y qué rango.
+    const bp = (s, max, campo) => {
+      const t = String(s ?? '').replace('%', '').replace(',', '.').trim();
+      const n = t === '' ? 0 : Number(t);
+      if (!Number.isFinite(n) || n < 0 || n > max) throw new Error(`«${campo}»: escriba un porcentaje entre 0 y ${max} (por ejemplo 3 o 3.5). Valor actual: «${s}».`);
+      return Math.round(n * 100);
+    };
+    const dia = (x, min, max, campo) => { const n = Number(x); if (!Number.isInteger(n) || n < min || n > max) throw new Error(`«${campo}»: escriba un número entero entre ${min} y ${max}.`); return n; };
     try {
+      const ppPct = bp(f.pp_pct.value, 50, 'Descuento por pronto pago'), ppDia = Number(f.pp_dia.value || 0);
+      if ((ppPct > 0) !== (ppDia > 0)) throw new Error('Pronto pago: para activarlo indique el porcentaje y el día límite; para desactivarlo deje ambos en 0.');
       await capi('/config', { method: 'PUT', body: { nombre: val(f, 'nombre'), razon_social: val(f, 'razon_social') || null, rfc: val(f, 'rfc') || null, ciudad: val(f, 'ciudad') || null, direccion: val(f, 'direccion') || null,
-        dia_vencimiento: +f.dia.value, dias_gracia: +f.gracia.value, tasa_recargo_bp: bp(f.tasa.value, 20), pct_reserva_bp: bp(f.reserva.value, 50), umbral_aprobacion_cents: pesosDe(f, 'umbral', { cero: true }),
-        pronto_pago_bp: bp(f.pp_pct.value || 0, 50), pronto_pago_dia: +f.pp_dia.value || 0, recargo_modo: f.rmodo.value, recargo_fijo_cents: pesosDe(f, 'rfijo', { requerido: false, cero: true }) || 0 } });
+        dia_vencimiento: dia(f.dia.value, 1, 28, 'Día de vencimiento'), dias_gracia: dia(f.gracia.value || 0, 0, 60, 'Días de gracia'),
+        tasa_recargo_bp: bp(f.tasa.value, 20, 'Porcentaje mensual de recargo'), pct_reserva_bp: bp(f.reserva.value, 50, 'Aportación al fondo de reserva'), umbral_aprobacion_cents: c.umbral_aprobacion_cents,
+        pronto_pago_bp: bp(f.pp_pct.value, 50, 'Descuento por pronto pago'), pronto_pago_dia: dia(f.pp_dia.value || 0, 0, 28, 'Día límite del pronto pago'), recargo_modo: f.rmodo.value, recargo_fijo_cents: pesosDe(f, 'rfijo', { requerido: false, cero: true }) || 0 } });
       toast('Configuración guardada.'); ctx.recargar();
     } catch (err) { toast(err.message, 'error'); }
   });

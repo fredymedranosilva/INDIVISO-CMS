@@ -770,12 +770,15 @@ export const apiRoutes = [
   }],
   // Rubro de egreso: nombre y tipo de gasto (fijo o variable). El código es único e inmutable.
   ['PUT', `${C}/cuentas/:id`, { perm: 'config' }, ctx => {
-    const b = v(ctx.body, { nombre: 'str|opt|max120', tipo_gasto: 'enum|fijo|variable|opt' });
+    const b = v(ctx.body, { nombre: 'str|opt|max120', tipo_gasto: 'enum|fijo|variable|opt', activo: 'bool|opt' });
     const k = ctx.db.prepare('SELECT * FROM cuentas WHERE id = ? AND condominio_id = ?').get(idParam(ctx), ctx.cid) || fail(404, 'Cuenta no encontrada');
     if (b.tipo_gasto && k.tipo !== 'egreso') fail(400, 'Solo los rubros de egreso son fijos o variables.');
+    // Las cuentas de sistema (bancos, caja, cuotas por cobrar…) sostienen la contabilidad automática: se pueden renombrar, no desactivar.
+    if (ctx.body.activo !== undefined && !b.activo && k.clave) fail(400, 'Esta cuenta la usa el sistema: puede cambiarle el nombre, pero no desactivarla.');
+    if (ctx.body.activo !== undefined && !b.activo && !['ingreso', 'egreso'].includes(k.tipo)) fail(400, 'Solo se desactivan partidas de ingreso o de gasto.');
     ctx.auditDetalle = { codigo: k.codigo, ...b };
     return escribir(ctx, 'cuenta_actualizada', 'cuenta', () => {
-      ctx.db.prepare('UPDATE cuentas SET nombre = COALESCE(?, nombre), tipo_gasto = COALESCE(?, tipo_gasto) WHERE id = ?').run(b.nombre ?? null, b.tipo_gasto ?? null, k.id);
+      ctx.db.prepare('UPDATE cuentas SET nombre = COALESCE(?, nombre), tipo_gasto = COALESCE(?, tipo_gasto), activo = COALESCE(?, activo) WHERE id = ?').run(b.nombre ?? null, b.tipo_gasto ?? null, ctx.body.activo === undefined ? null : b.activo ? 1 : 0, k.id);
       return k.id;
     });
   }],
@@ -811,6 +814,7 @@ export const apiRoutes = [
   ['GET', `${C}/reportes/cobranza`, { perm: 'ver' }, ctx => R.cobranzaMensual(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', addMonths(periodoActual(), -11)), qPeriodo(ctx, 'hasta', periodoActual()))],
   ['GET', `${C}/reportes/fondos`, { perm: 'ver' }, ctx => R.fondos(ctx.db, ctx.cid, qPeriodo(ctx, 'desde', `${hoy().slice(0, 4)}-01`), qPeriodo(ctx, 'hasta', periodoActual()))],
   ['GET', `${C}/reportes/cxp`, { perm: 'ver' }, ctx => R.cuentasPorPagar(ctx.db, ctx.cid, qFecha(ctx, 'corte', hoy()))],
+  ['GET', `${C}/reportes/integracion`, { perm: 'ver' }, ctx => { const corte = qFecha(ctx, 'corte', hoy()); if (corte > hoy()) fail(400, 'La fecha de corte no puede ser futura.'); return R.integracionSaldos(ctx.db, ctx.cid, corte); }],
   ['GET', `${C}/reportes/liquidacion-egresos`, { perm: 'ver' }, ctx => R.liquidacionEgresos(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/liquidacion`, { perm: 'ver' }, ctx => R.liquidacionAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],
   ['GET', `${C}/reportes/anual`, { perm: 'ver' }, ctx => R.informeAnual(ctx.db, ctx.cid, qInt(ctx, 'ejercicio', +hoy().slice(0, 4)))],

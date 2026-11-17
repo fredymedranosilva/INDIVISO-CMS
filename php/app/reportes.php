@@ -63,6 +63,23 @@ function carteraUnidades(DB $db, int $cid, ?string $corte = null): array {
   }
   return array_map(fn($u) => array_merge($u, ['saldo_neto' => $u['adeudo'] - $u['saldo_favor'], 'convenio' => $u['convenio'] ? ['id' => $u['convenio']['id']] + estadoConvenio($db, $u['convenio']) : null]), array_values($map));
 }
+function integracionSaldos(DB $db, int $cid, ?string $corte = null): array {
+  $corte ??= hoy();
+  $cargos = filt($db->prepare('SELECT c.unidad_id, c.tipo, c.dedupe_key, c.monto_cents - ' . APLICADO_AL . ' AS saldo FROM cargos c LEFT JOIN polizas xp ON xp.id = c.cancel_poliza_id
+    WHERE c.condominio_id = ? AND c.fecha <= ? AND (c.cancelado_at IS NULL OR xp.fecha > ?)')->all($corte, $corte, $cid, $corte, $corte), fn($c) => $c['saldo'] > 0);
+  $COL = ['ordinaria' => 'ordinarias', 'extraordinaria' => 'extraordinarias', 'recargo' => 'recargos', 'multa' => 'multas', 'otro' => 'otros'];
+  $vacio = ['saldo_inicial' => 0, 'ordinarias' => 0, 'extraordinarias' => 0, 'recargos' => 0, 'multas' => 0, 'otros' => 0];
+  $por = [];
+  foreach ($cargos as $c) { $por[$c['unidad_id']] ??= $vacio; $por[$c['unidad_id']][str_starts_with((string)$c['dedupe_key'], 'INI:') ? 'saldo_inicial' : $COL[$c['tipo']]] += $c['saldo']; }
+  $rows = [];
+  foreach (carteraUnidades($db, $cid, $corte) as $u) {
+    $x = $por[$u['id']] ?? $vacio; $adeudo = array_sum($x);
+    if (!$adeudo && !$u['saldo_favor']) continue;
+    $rows[] = ['id' => $u['id'], 'clave' => $u['clave'], 'torre' => $u['torre'], 'propietario' => $u['propietario']] + $x + ['adeudo' => $adeudo, 'vencido' => $u['vencido'], 'por_vencer' => $u['por_vencer'], 'saldo_favor' => $u['saldo_favor'], 'saldo_neto' => $adeudo - $u['saldo_favor']];
+  }
+  $t = []; foreach (['saldo_inicial', 'ordinarias', 'extraordinarias', 'recargos', 'multas', 'otros', 'adeudo', 'vencido', 'por_vencer', 'saldo_favor', 'saldo_neto'] as $k) $t[$k] = suma($rows, $k);
+  return ['corte' => $corte, 'unidades' => $rows, 'totales' => $t];
+}
 function carteraDetalle(DB $db, int $cid, ?string $corte = null): array {
   $corte ??= hoy();
   $clave = []; foreach ($db->prepare('SELECT id, clave FROM unidades WHERE condominio_id = ?')->all($cid) as $u) $clave[$u['id']] = $u['clave'];

@@ -616,11 +616,14 @@ function apiRoutes(): array { $C = '/api/c/:cid'; return [
     });
   }],
   ['PUT', "$C/cuentas/:id", ['perm' => 'config'], function (Ctx $ctx) {
-    $b = v($ctx->body, ['nombre' => 'str|opt|max120', 'tipo_gasto' => 'enum|fijo|variable|opt']);
+    $b = v($ctx->body, ['nombre' => 'str|opt|max120', 'tipo_gasto' => 'enum|fijo|variable|opt', 'activo' => 'bool|opt']);
     $k = $ctx->db->prepare('SELECT * FROM cuentas WHERE id = ? AND condominio_id = ?')->get(idParam($ctx), $ctx->cid) ?? fail(404, 'Cuenta no encontrada');
     if ($b['tipo_gasto'] && $k['tipo'] !== 'egreso') fail(400, 'Solo los rubros de egreso son fijos o variables.');
+    $hayActivo = array_key_exists('activo', $ctx->body) && $ctx->body['activo'] !== null;
+    if ($hayActivo && !$b['activo'] && $k['clave']) fail(400, 'Esta cuenta la usa el sistema: puede cambiarle el nombre, pero no desactivarla.');
+    if ($hayActivo && !$b['activo'] && !in_array($k['tipo'], ['ingreso', 'egreso'], true)) fail(400, 'Solo se desactivan partidas de ingreso o de gasto.');
     detalle($ctx, ['codigo' => $k['codigo']] + $b);
-    return escribir($ctx, 'cuenta_actualizada', 'cuenta', function () use ($ctx, $b, $k) { $ctx->db->prepare('UPDATE cuentas SET nombre = COALESCE(?, nombre), tipo_gasto = COALESCE(?, tipo_gasto) WHERE id = ?')->run($b['nombre'], $b['tipo_gasto'], $k['id']); return $k['id']; });
+    return escribir($ctx, 'cuenta_actualizada', 'cuenta', function () use ($ctx, $b, $k, $hayActivo) { $ctx->db->prepare('UPDATE cuentas SET nombre = COALESCE(?, nombre), tipo_gasto = COALESCE(?, tipo_gasto), activo = COALESCE(?, activo) WHERE id = ?')->run($b['nombre'], $b['tipo_gasto'], $hayActivo ? ($b['activo'] ? 1 : 0) : null, $k['id']); return $k['id']; });
   }],
   ['GET', "$C/polizas", ['perm' => 'ver'], function (Ctx $ctx) {
     $w = ['p.condominio_id = ?']; $a = [$ctx->cid];
@@ -651,6 +654,7 @@ function apiRoutes(): array { $C = '/api/c/:cid'; return [
   ['GET', "$C/reportes/cobranza", ['perm' => 'ver'], fn(Ctx $ctx) => cobranzaMensual($ctx->db, $ctx->cid, qPeriodo($ctx, 'desde', addMonths(periodoActual(), -11)), qPeriodo($ctx, 'hasta', periodoActual()))],
   ['GET', "$C/reportes/fondos", ['perm' => 'ver'], fn(Ctx $ctx) => fondos($ctx->db, $ctx->cid, qPeriodo($ctx, 'desde', substr(hoy(), 0, 4) . '-01'), qPeriodo($ctx, 'hasta', periodoActual()))],
   ['GET', "$C/reportes/cxp", ['perm' => 'ver'], fn(Ctx $ctx) => cuentasPorPagar($ctx->db, $ctx->cid, qFecha($ctx, 'corte', hoy()))],
+  ['GET', "$C/reportes/integracion", ['perm' => 'ver'], function (Ctx $ctx) { $corte = qFecha($ctx, 'corte', hoy()); if ($corte > hoy()) fail(400, 'La fecha de corte no puede ser futura.'); return integracionSaldos($ctx->db, $ctx->cid, $corte); }],
   ['GET', "$C/reportes/liquidacion-egresos", ['perm' => 'ver'], fn(Ctx $ctx) => liquidacionEgresos($ctx->db, $ctx->cid, qInt($ctx, 'ejercicio', (int)substr(hoy(), 0, 4)))],
   ['GET', "$C/reportes/liquidacion", ['perm' => 'ver'], fn(Ctx $ctx) => liquidacionAnual($ctx->db, $ctx->cid, qInt($ctx, 'ejercicio', (int)substr(hoy(), 0, 4)))],
   ['GET', "$C/reportes/anual", ['perm' => 'ver'], fn(Ctx $ctx) => informeAnual($ctx->db, $ctx->cid, qInt($ctx, 'ejercicio', (int)substr(hoy(), 0, 4)))],

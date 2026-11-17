@@ -42,7 +42,7 @@ const DEF = {
       const ej = us.slice(0, 3).map((u, i) => [u.clave, u.propietario || '', [3450, 1800, 5000][i], diasAtras(3 - i), ['Transferencia', 'Depósito', 'Efectivo'][i], i === 2 ? 'Caja' : b, ['SPEI 0012345678', 'FOLIO 445566', ''][i], `${MARCA}${i === 1 ? ' · pago parcial' : i === 2 ? ' · en efectivo va a Caja' : ''}`]);
       return [hojaConEjemplos('Pagos', ['Vivienda', 'Propietario', 'Importe', 'Fecha', 'Forma de pago', 'Cuenta bancaria', 'Referencia', 'Comentarios'], ej, us.map(u => [u.clave, u.propietario || ''])),
       instrucciones([...COMUNES, '• La hoja trae todas las viviendas: llene Importe y Fecha solo en las que pagaron; las filas sin importe se ignoran.',
-        '• Vivienda: clave o referencia de pago (hoja Unidades); la columna Propietario es solo de consulta. Cuenta bancaria: código de la hoja Cuentas, últimos 4 dígitos, nombre o «Caja».',
+        '• Vivienda: clave o referencia de pago; la columna Propietario es solo de consulta. Cuenta bancaria: código de la cuenta (Bancos), últimos 4 dígitos, nombre o «Caja».',
         '• Forma de pago: Transferencia, Efectivo, Cheque, Tarjeta, Depósito o Domiciliación (también la clave SAT: 01, 02, 03, 04, 28).',
         '• Referencia: clave de rastreo o folio de la operación; evita registrar dos veces el mismo depósito.']),
       hojaUnidades(c), hojaCuentas(c), hojaFormas()];
@@ -66,9 +66,9 @@ const DEF = {
       ];
       return [hojaConEjemplos('Egresos', ['Concepto', 'Proveedor', 'Importe', 'Fecha', 'Forma de pago', 'Cuenta bancaria', 'Referencia', 'Clasificación presupuestal', 'Fondo', 'Comentarios'], ej),
         instrucciones([...COMUNES, '• Importe: total pagado en pesos.',
-          '• Clasificación presupuestal: código o nombre de la hoja Partidas. Fondo: Operación (ordinario), Reserva (extraordinario) o el nombre de un fondo (hoja Fondos).',
+          '• Clasificación presupuestal: código o nombre de la partida (Contabilidad → Catálogo). Fondo: Operación (ordinario), Reserva (extraordinario) o el nombre de un fondo.',
           '• Proveedor: si no existe en el catálogo se da de alta con su nombre.',
-          '• Si la fila trae Forma de pago o Cuenta bancaria, el egreso queda pagado en esa fecha. Cuenta bancaria: código de la hoja Cuentas o «Caja».',
+          '• Si la fila trae Forma de pago o Cuenta bancaria, el egreso queda pagado en esa fecha. Cuenta bancaria: código de la cuenta (Bancos) o «Caja».',
           '• Los egresos del fondo de reserva o de importe igual o mayor al umbral quedan pendientes de aprobación de un segundo usuario.']),
         hojaPartidas(c), hojaCuentas(c), hojaFormas(), { nombre: 'Fondos', filas: [['Fondo'], ['Operación'], ['Reserva'], ...(c.fondos || []).map(f => [f])] }, { nombre: 'Proveedores', filas: [['Nombre'], ...c.proveedores.map(p => [p.nombre])] }];
     },
@@ -112,7 +112,7 @@ const DEF = {
       const ej = us.slice(0, 3).map((u, i) => [u.clave, u.propietario || '', [3450, 3800, 4200][i], `${MARCA}`]);
       return [hojaConEjemplos('Cuotas', ['Código', 'Propietario', 'Cuota mensual', 'Comentarios'], ej, us.map(u => [u.clave, u.propietario || '', (u.cuota_cents || 0) / 100])),
         instrucciones([...COMUNES, '• La hoja trae todos los departamentos con su cuota actual: cambie solo la columna «Cuota mensual».',
-          '• Código: clave única de la unidad (hoja Unidades) o su referencia de pago. La columna Propietario es solo de consulta.',
+          '• Código: clave única de la unidad o su referencia de pago. La columna Propietario es solo de consulta.',
           '• Las cuotas sin cambio se omiten. Las cuotas ya emitidas no se modifican.']), hojaUnidades(c)];
     },
   },
@@ -138,7 +138,7 @@ const DEF = {
         ['EJEMPLO', 'Mantenimiento de elevadores (trimestral)', 'Fijo', ...MES.map((_, i) => i % 3 === 0 ? 9800 : 0), MARCA],
         ['EJEMPLO', 'Pintura (solo en abril)', 'Variable', ...MES.map((_, i) => i === 3 ? 45000 : 0), MARCA]],
         c.partidas.map(p => [p.codigo, p.nombre, TG(p.tipo_gasto), ...MES.map((_, i) => (x.valores.get(`${p.id}:${i + 1}`) || 0) / 100)])),
-      instrucciones([...COMUNES, '• Código: el código único de la partida (hoja Partidas); la fila se identifica por el código, no por el nombre. Importes por mes en pesos.', '• Tipo: Fijo (contratos y pagos periódicos) o Variable (consumos y reparaciones). Si lo cambia, se actualiza en el catálogo.', '• En lugar de los 12 meses puede usar una sola columna «Anual» o «Mensual».']), hojaPartidas(c)],
+      instrucciones([...COMUNES, '• Código: el código único de la partida; la fila se identifica por el código, no por el nombre. Importes por mes en pesos.', '• Tipo: Fijo (contratos y pagos periódicos) o Variable (consumos y reparaciones). Si lo cambia, se actualiza en el catálogo.', '• En lugar de los 12 meses puede usar una sola columna «Anual» o «Mensual».']), hojaPartidas(c)],
     opciones: () => puede('config') ? html`<label class="check"><input type="checkbox" name="crear_partidas"><span>Crear las partidas que no existan en el catálogo</span></label>` : '',
     leer: f => ({ crear_partidas: !!f.crear_partidas?.checked }),
   },
@@ -147,7 +147,8 @@ const DEF = {
 export async function descargarPlantilla(tipo, extra = {}) {
   const d = DEF[tipo], c = await capi('/importar/catalogos');
   const nombre = (S.condos.find(x => x.id === S.cid)?.nombre || 'condominio').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w]+/g, '-').toLowerCase();
-  await guardarBlob(escribirXlsx(d.plantilla(c, extra)), `${d.archivo}-${nombre}.xlsx`);
+  // Una sola hoja: la que se llena. Los catálogos de apoyo y las instrucciones se ven en el diálogo de importación.
+  await guardarBlob(escribirXlsx(d.plantilla(c, extra).slice(0, 1)), `${d.archivo}-${nombre}.xlsx`);
 }
 
 // abrirImportacion('pagos', { onOk, opciones: { presupuesto_id }, extra })
@@ -155,9 +156,13 @@ export async function abrirImportacion(tipo, { onOk, opciones: fijas = {}, extra
   const d = DEF[tipo];
   const cat = await capi('/importar/catalogos');
   let filas = null, archivo = null, res = null, pendiente = 0;
+  // Las instrucciones (antes una hoja extra del Excel) se muestran aquí; la plantilla trae solo la hoja que se llena.
+  let instr = [];
+  try { instr = (d.plantilla(cat, extra).find(h => h.nombre === 'Instrucciones')?.filas || []).slice(1).map(f => String(f[0]).replace(/^•\s*/, '')); } catch { /* sin instrucciones */ }
   dialogo({
     titulo: d.titulo, ancho: 'wide',
     cuerpo: html`<p class="lead small">${d.ayuda}</p>
+      ${instr.length ? html`<details class="imp-pegar"><summary>Cómo llenar la plantilla</summary><ul class="small">${instr.map(t => html`<li>${t}</li>`)}</ul></details>` : ''}
       <div class="imp-pasos">
         <div class="imp-paso"><b>1</b><span>Descargue la plantilla, llénela en Excel y guárdela.</span><button type="button" class="btn sm" data-plantilla>Descargar plantilla .xlsx</button></div>
         <div class="imp-paso"><b>2</b><label class="field grow"><span>Seleccione el archivo (.xlsx o .csv)</span><input type="file" name="archivo" accept=".xlsx,.xlsm,.csv,.txt,.tsv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"></label></div>

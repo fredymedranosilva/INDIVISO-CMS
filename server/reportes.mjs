@@ -76,6 +76,30 @@ export function carteraUnidades(db, cid, corte = hoy()) {
   return [...map.values()].map(u => ({ ...u, saldo_neto: u.adeudo - u.saldo_favor, convenio: u.convenio ? { id: u.convenio.id, ...estadoConvenio(db, u.convenio) } : null }));
 }
 
+// Integración de saldos: de qué se compone el saldo de cada unidad al corte (saldo inicial, cuotas, extraordinarias,
+// recargos, multas y otros), menos su saldo a favor. Se calcula solo, igual que la cartera; cuadra con la cuenta por cobrar.
+export function integracionSaldos(db, cid, corte = hoy()) {
+  const cargos = db.prepare(`SELECT c.unidad_id, c.tipo, c.dedupe_key, c.monto_cents - ${APLICADO_AL} AS saldo
+    FROM cargos c LEFT JOIN polizas xp ON xp.id = c.cancel_poliza_id
+    WHERE c.condominio_id = ? AND c.fecha <= ? AND (c.cancelado_at IS NULL OR xp.fecha > ?)`).all(corte, corte, cid, corte, corte).filter(c => c.saldo > 0);
+  const COL = { ordinaria: 'ordinarias', extraordinaria: 'extraordinarias', recargo: 'recargos', multa: 'multas', otro: 'otros' };
+  const vacio = () => ({ saldo_inicial: 0, ordinarias: 0, extraordinarias: 0, recargos: 0, multas: 0, otros: 0 });
+  const por = new Map();
+  for (const c of cargos) {
+    const x = por.get(c.unidad_id) || vacio();
+    x[String(c.dedupe_key).startsWith('INI:') ? 'saldo_inicial' : COL[c.tipo]] += c.saldo;
+    por.set(c.unidad_id, x);
+  }
+  const rows = carteraUnidades(db, cid, corte).map(u => {
+    const x = por.get(u.id) || vacio();
+    const adeudo = Object.values(x).reduce((a, b) => a + b, 0);
+    return { id: u.id, clave: u.clave, torre: u.torre, propietario: u.propietario, ...x, adeudo, vencido: u.vencido, por_vencer: u.por_vencer, saldo_favor: u.saldo_favor, saldo_neto: adeudo - u.saldo_favor };
+  }).filter(r => r.adeudo || r.saldo_favor);
+  const totales = {};
+  for (const k of ['saldo_inicial', 'ordinarias', 'extraordinarias', 'recargos', 'multas', 'otros', 'adeudo', 'vencido', 'por_vencer', 'saldo_favor', 'saldo_neto']) totales[k] = rows.reduce((a, r) => a + r[k], 0);
+  return { corte, unidades: rows, totales };
+}
+
 // Detalle de los cargos abiertos al corte (para el reporte de morosidad y los avisos de cobro).
 export function carteraDetalle(db, cid, corte = hoy()) {
   const clave = new Map(db.prepare('SELECT id, clave FROM unidades WHERE condominio_id = ?').all(cid).map(u => [u.id, u.clave]));

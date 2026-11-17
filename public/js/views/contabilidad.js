@@ -125,11 +125,20 @@ export const cambiarTipoGasto = async (d, elx) => { await capi(`/cuentas/${d.id}
 function catalogo(el, ctx, cuentas) {
   const TIPOS = { activo: 'Activo', pasivo: 'Pasivo', patrimonio: 'Patrimonio', ingreso: 'Ingresos', egreso: 'Egresos' };
   mount(el, html`<div class="filters"><span class="spacer"></span>${puede('config') ? html`<button class="btn" data-action="nueva">Nueva cuenta</button>` : ''}</div>
-    <section class="panel flush"><header><h2>Catálogo de cuentas</h2><span class="meta">Las cuentas con clave de sistema alimentan cobranza, fondos y bancos.</span></header>
-    <div class="table-wrap"><table class="tbl dense"><thead><tr><th>Código</th><th>Cuenta</th><th>Naturaleza</th><th>Tipo de gasto</th><th>Uso</th></tr></thead><tbody>
-    ${Object.entries(TIPOS).map(([t, l]) => html`<tr class="grupo"><td colspan="5">${l}</td></tr>${cuentas.filter(k => k.tipo === t).map(k => html`<tr><td class="num">${k.codigo}</td><td>${k.nombre}</td><td>${k.naturaleza === 'D' ? 'Deudora' : 'Acreedora'}</td><td>${k.tipo === 'egreso' ? selTipoGasto(k) : ''}</td><td>${k.clave ? html`<span class="pill neutral">${k.clave}</span>` : k.presupuestable ? 'Partida presupuestal' : ''}</td></tr>`)}`)}
+    <section class="panel flush"><header><h2>Catálogo de cuentas</h2><span class="meta">Puede renombrar cualquier cuenta y crear las suyas. Las de sistema no se desactivan porque alimentan cobranza, fondos y bancos.</span></header>
+    <div class="table-wrap"><table class="tbl dense"><thead><tr><th>Código</th><th>Cuenta</th><th>Naturaleza</th><th>Tipo de gasto</th><th>Uso</th><th></th></tr></thead><tbody>
+    ${Object.entries(TIPOS).map(([t, l]) => html`<tr class="grupo"><td colspan="6">${l}</td></tr>${cuentas.filter(k => k.tipo === t).map(k => html`<tr><td class="num">${k.codigo}</td><td>${k.nombre}</td><td>${k.naturaleza === 'D' ? 'Deudora' : 'Acreedora'}</td><td>${k.tipo === 'egreso' ? selTipoGasto(k) : ''}</td><td>${k.clave ? html`<span class="pill neutral">Sistema</span>` : k.presupuestable ? 'Partida presupuestal' : k.tipo === 'activo' && k.codigo.startsWith('1102') ? 'Banco' : k.codigo.startsWith('3102') ? 'Fondo' : 'Propia'}${k.activo ? '' : html` ${pill(['Inactiva', 'neutral'])}`}</td>
+      <td class="r nowrap">${puede('config') ? html`<button class="btn sm" data-action="renombrar" data-id="${k.id}">Renombrar</button>${k.clave || !['ingreso', 'egreso'].includes(k.tipo) ? '' : html` <button class="btn sm ghost" data-action="activar" data-id="${k.id}" data-on="${k.activo ? 0 : 1}">${k.activo ? 'Desactivar' : 'Activar'}</button>`}` : ''}</td></tr>`)}`)}
     </tbody></table></div></section>`);
+  const cta = id => cuentas.find(k => k.id === +id);
   ctx.acciones({
+    renombrar: d => { const k = cta(d.id); dialogo({
+      titulo: `Renombrar ${k.codigo}`, cuerpo: html`<div class="form-grid"><label class="field full"><span>Nombre</span><input name="nombre" required maxlength="120" value="${k.nombre}"></label>
+        <p class="note full">El código ${k.codigo} no cambia. El nombre nuevo aparece en reportes, presupuesto y pólizas, incluidas las ya registradas.</p></div>`,
+      acciones: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Guardar', primary: true }],
+      onSubmit: async f => { await capi(`/cuentas/${k.id}`, { method: 'PUT', body: { nombre: val(f, 'nombre') } }); toast('Cuenta renombrada.'); ctx.recargar(); },
+    }); },
+    activar: async d => { await capi(`/cuentas/${d.id}`, { method: 'PUT', body: { activo: d.on === '1' } }); toast(d.on === '1' ? 'Cuenta activada.' : 'Cuenta desactivada: ya no aparece para capturar.'); ctx.recargar(); },
     nueva: () => dialogo({
       titulo: 'Nueva cuenta contable', cuerpo: html`<div class="form-grid"><label class="field"><span>Código</span><input name="codigo" required placeholder="5504" maxlength="12"></label>
         <label class="field"><span>Tipo</span><select name="tipo">${Object.entries(TIPOS).map(([k, l]) => html`<option value="${k}" ${k === 'egreso' ? raw('selected') : ''}>${l}</option>`)}</select></label>
